@@ -155,7 +155,6 @@ rayne/
 │   │   ├── user/         # User management
 │   │   └── webhooks/     # Webhook handling
 │   └── Dockerfile
-├── dd_lib/               # Python reference (being ported)
 ├── k8s/                  # Kubernetes manifests
 ├── scripts/              # Deployment scripts
 └── docker-compose.yaml
