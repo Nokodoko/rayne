@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    run: po
+  name: rayne
+spec:
+  containers:
+    - image: archlinux:latest
+      name: rayne
+      command: ["sleep"]
+      args: ["infinity"]
+      resources: {}
+      terminationGracePeriodSeconds: 1
+  dnsPolicy: ClusterFirst
+  restartPolicy: Always
+status: {}

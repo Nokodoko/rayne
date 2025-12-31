@@ -1,0 +1,52 @@
+# 1. Kubernetes Secret for the PostgreSQL Superuser Password
+# This resource MUST be created BEFORE the Deployment starts the Pod.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-secret
+type: Opaque
+stringData:
+  # IMPORTANT: Replace 'yoursecurepassword' with a strong password.
+  # This sets the value for the POSTGRES_PASSWORD environment variable
+  # needed for the initial database setup.
+  postgres-password: yoursecurepassword
+---
+# 2. Kubernetes Deployment for the PostgreSQL Database
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:latest
+          ports:
+            - containerPort: 5432
+          env:
+            # Inject the POSTGRES_PASSWORD environment variable from the Secret
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret # Reference to the Secret resource defined above
+                  key: postgres-password # Reference to the 'postgres-password' key inside the Secret
+          
+          volumeMounts:
+            # Mount the persistent volume at PostgreSQL's default data location
+            - mountPath: /var/lib/postgresql/data
+              name: postgres-storage
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            # Ensure you have already created a PersistentVolumeClaim named 'postgres-pvc'
+            claimName: postgres-pvc
