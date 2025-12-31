@@ -32,7 +32,7 @@ fi
 echo ""
 echo "Building Rayne Docker image..."
 cd "$(dirname "$0")/../mkii_ddog_server"
-docker buildx build --load -t rayne:latest .
+DOCKER_BUILDKIT=1 docker build -t rayne:latest .
 
 # Load image into minikube (works for both single and multi-node)
 echo ""
