@@ -6,12 +6,19 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
-	// "github.com/!data!dog/dd-trace-go/ddtrace/tracer"
-	// "github.com/Datadog/dd-trace-go/v2/ddrace/tracer"
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/keys"
-	// "github.com/n0ko/ddog_test_server/utils"
+	httptrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/net/http"
 )
+
+// tracedClient is a shared HTTP client with Datadog APM tracing enabled
+// for all outgoing requests to the Datadog API
+var tracedClient = httptrace.WrapClient(&http.Client{
+	Timeout: 30 * time.Second,
+}, httptrace.RTWithResourceNamer(func(req *http.Request) string {
+	return req.Method + " " + req.URL.Path
+}))
 
 func Get[T any](w http.ResponseWriter, r *http.Request, url string) (T, int, error) {
 	var parsedResponse T
@@ -28,17 +35,12 @@ func Get[T any](w http.ResponseWriter, r *http.Request, url string) (T, int, err
 	req.Header.Set("DD-API-KEY", keys.Api())
 	req.Header.Set("DD-APPLICATION-KEY", keys.App())
 
-	client := &http.Client{}
-	response, err := client.Do(req)
+	// Use traced client for APM visibility into outgoing Datadog API calls
+	response, err := tracedClient.Do(req)
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		log.Printf("Error making request: %v", err)
 		return zero, http.StatusInternalServerError, err
 	}
-
-	// span := tracer.StartSpan("web.request", tracer.ResourceName("/get"))
-	// defer span.Finish()
-	// log.Printf("Span Entry %v", span)
-
 	defer response.Body.Close()
 
 	// if err := utils.ParseJson(response.Body, parsedResponse); err != nil {
@@ -78,8 +80,8 @@ func Post[T any](w http.ResponseWriter, r *http.Request, url string, payload int
 	req.Header.Set("DD-API-KEY", keys.Api())
 	req.Header.Set("DD-APPLICATION-KEY", keys.App())
 
-	client := &http.Client{}
-	response, err := client.Do(req)
+	// Use traced client for APM visibility into outgoing Datadog API calls
+	response, err := tracedClient.Do(req)
 	if err != nil {
 		return zero, http.StatusInternalServerError, err
 	}
@@ -117,8 +119,8 @@ func Put[T any](w http.ResponseWriter, r *http.Request, url string, payload inte
 	req.Header.Set("DD-API-KEY", keys.Api())
 	req.Header.Set("DD-APPLICATION-KEY", keys.App())
 
-	client := &http.Client{}
-	response, err := client.Do(req)
+	// Use traced client for APM visibility into outgoing Datadog API calls
+	response, err := tracedClient.Do(req)
 	if err != nil {
 		return zero, http.StatusInternalServerError, err
 	}
@@ -150,8 +152,8 @@ func Delete[T any](w http.ResponseWriter, r *http.Request, url string) (T, int, 
 	req.Header.Set("DD-API-KEY", keys.Api())
 	req.Header.Set("DD-APPLICATION-KEY", keys.App())
 
-	client := &http.Client{}
-	response, err := client.Do(req)
+	// Use traced client for APM visibility into outgoing Datadog API calls
+	response, err := tracedClient.Do(req)
 	if err != nil {
 		return zero, http.StatusInternalServerError, err
 	}

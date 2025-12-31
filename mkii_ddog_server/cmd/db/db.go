@@ -6,11 +6,16 @@ import (
 	"log"
 
 	"github.com/Nokodoko/mkii_ddog_server/cmd/config"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
+	sqltrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/database/sql"
 )
 
 // SqlStorage creates a PostgreSQL database connection using environment variables
+// with Datadog APM tracing enabled for all SQL queries
 func SqlStorage(cfg config.Config) (*sql.DB, error) {
+	// Register the pq driver with Datadog tracing
+	sqltrace.Register("postgres", &pq.Driver{}, sqltrace.WithServiceName("rayne-db"))
+
 	connStr := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		cfg.DBHost,
@@ -22,7 +27,8 @@ func SqlStorage(cfg config.Config) (*sql.DB, error) {
 	)
 	log.Printf("Connecting to database at %s:%s", cfg.DBHost, cfg.DBPort)
 
-	db, err := sql.Open("postgres", connStr)
+	// Use sqltrace.Open instead of sql.Open for traced connections
+	db, err := sqltrace.Open("postgres", connStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -32,6 +38,6 @@ func SqlStorage(cfg config.Config) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	log.Println("Database connection established")
+	log.Println("Database connection established with APM tracing")
 	return db, nil
 }

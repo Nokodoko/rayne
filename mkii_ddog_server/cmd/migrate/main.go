@@ -8,6 +8,7 @@ import (
 	"github.com/Nokodoko/mkii_ddog_server/cmd/config"
 	"github.com/Nokodoko/mkii_ddog_server/cmd/db"
 	_ "github.com/lib/pq"
+	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
 // TODO:
@@ -17,6 +18,17 @@ import (
 //*automate /var/log to rotate log files - prevent filling disk space*
 
 func main() {
+	// Start Datadog APM tracer - automatically starts on every application restart
+	tracer.Start(
+		tracer.WithService(config.Envs.DDService),
+		tracer.WithEnv(config.Envs.DDEnv),
+		tracer.WithServiceVersion(config.Envs.DDVersion),
+		tracer.WithAgentAddr(config.Envs.DDAgentHost+":8126"),
+	)
+	defer tracer.Stop()
+	log.Printf("Datadog APM tracer started: service=%s env=%s version=%s agent=%s",
+		config.Envs.DDService, config.Envs.DDEnv, config.Envs.DDVersion, config.Envs.DDAgentHost)
+
 	db, err := db.SqlStorage(config.Envs)
 	if err != nil {
 		log.Fatal(err)

@@ -28,11 +28,11 @@ else
     echo "Minikube is already running"
 fi
 
-# Build the Docker image locally
+# Build the Docker image locally using buildx
 echo ""
 echo "Building Rayne Docker image..."
 cd "$(dirname "$0")/../mkii_ddog_server"
-docker build -t rayne:latest .
+docker buildx build --load -t rayne:latest .
 
 # Load image into minikube (works for both single and multi-node)
 echo ""

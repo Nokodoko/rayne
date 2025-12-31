@@ -17,6 +17,7 @@ import (
 	"github.com/Nokodoko/mkii_ddog_server/services/rum"
 	"github.com/Nokodoko/mkii_ddog_server/services/user"
 	"github.com/Nokodoko/mkii_ddog_server/services/webhooks"
+	httptrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/net/http"
 )
 
 type DDogServer struct {
@@ -149,7 +150,13 @@ func (d *DDogServer) Run() error {
 		  POST /v1/services/definitions
 		  POST /v1/demo/seed/all
 	`, d.addr)
-	return http.ListenAndServe(d.addr, router)
+
+	// Wrap router with Datadog APM tracing middleware
+	tracedRouter := httptrace.WrapHandler(router, "rayne", "/",
+		httptrace.WithSpanOptions(),
+	)
+
+	return http.ListenAndServe(d.addr, tracedRouter)
 }
 
 // log.Println("\x1B[3m" + green + "DB: Successfully Connected" + "\x1B[0m")
