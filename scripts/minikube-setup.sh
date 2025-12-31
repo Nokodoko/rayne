@@ -8,6 +8,21 @@ set -e
 echo "=== Rayne Minikube Setup ==="
 echo ""
 
+# Check for required environment variables
+if [ -z "$DD_API_KEY" ]; then
+    echo "Error: DD_API_KEY environment variable is not set"
+    echo "Please set it: export DD_API_KEY=your-api-key"
+    exit 1
+fi
+
+if [ -z "$DD_APP_KEY" ]; then
+    echo "Error: DD_APP_KEY environment variable is not set"
+    echo "Please set it: export DD_APP_KEY=your-app-key"
+    exit 1
+fi
+
+echo "Datadog API keys found in environment"
+
 # Check if minikube is installed
 if ! command -v minikube &> /dev/null; then
     echo "Error: minikube is not installed. Please install minikube first."
@@ -57,7 +72,12 @@ done
 echo "Waiting for PostgreSQL to be ready..."
 kubectl wait --for=condition=ready pod -l app=postgres --timeout=120s
 
-kubectl apply -f datadog-secrets.yaml
+# Create datadog secrets from environment variables (not from file with placeholders)
+echo "Creating Datadog secrets from environment variables..."
+kubectl create secret generic datadog-secrets \
+    --from-literal=api-key="$DD_API_KEY" \
+    --from-literal=app-key="$DD_APP_KEY" \
+    --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl apply -f rayne-deployment.yaml
 
