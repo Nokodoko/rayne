@@ -8,6 +8,21 @@ set -e
 echo "=== Rayne Minikube Setup ==="
 echo ""
 
+# Check for required environment variables
+if [ -z "$TF_VAR_ecco_dd_api_key" ]; then
+    echo "Error: DD_API_KEY environment variable is not set"
+    echo "Please set it: export DD_API_KEY=your-api-key"
+    exit 1
+fi
+
+if [ -z "$TF_VAR_ecco_dd_app_key" ]; then
+    echo "Error: DD_APP_KEY environment variable is not set"
+    echo "Please set it: export DD_APP_KEY=your-app-key"
+    exit 1
+fi
+
+echo "Datadog API keys found in environment"
+
 # Check if minikube is installed
 if ! command -v minikube &> /dev/null; then
     echo "Error: minikube is not installed. Please install minikube first."
@@ -57,7 +72,12 @@ done
 echo "Waiting for PostgreSQL to be ready..."
 kubectl wait --for=condition=ready pod -l app=postgres --timeout=120s
 
-kubectl apply -f datadog-secrets.yaml
+# Create datadog secrets from environment variables (not from file with placeholders)
+echo "Creating Datadog secrets from environment variables..."
+kubectl create secret generic datadog-secrets \
+    --from-literal=api-key="$TF_VAR_ecco_dd_api_key" \
+    --from-literal=app-key="$TF_VAR_ecco_dd_app_key" \
+    --dry-run=client -o yaml | kubectl apply -f -
 
 kubectl apply -f rayne-deployment.yaml
 
@@ -69,6 +89,54 @@ until kubectl get pods -l app=rayne 2>/dev/null | grep -q rayne; do
 done
 echo "Waiting for Rayne to be ready..."
 kubectl wait --for=condition=ready pod -l app=rayne --timeout=120s
+
+# Install Datadog Agent using Helm
+echo ""
+echo "=== Installing Datadog Agent ==="
+
+# Check if helm is installed
+if ! command -v helm &> /dev/null; then
+    echo "Warning: helm is not installed. Skipping Datadog Agent installation."
+    echo "To install helm: https://helm.sh/docs/intro/install/"
+else
+    # Add Datadog Helm repository
+    echo "Adding Datadog Helm repository..."
+    helm repo add datadog https://helm.datadoghq.com 2>/dev/null || true
+    helm repo update
+
+    # Check if datadog-agent is already installed
+    if helm list | grep -q datadog-agent; then
+        echo "Upgrading existing Datadog Agent..."
+        helm upgrade datadog-agent datadog/datadog \
+            --set datadog.apiKey="$TF_VAR_ecco_dd_api_key" \
+            --set datadog.appKey="$TF_VAR_ecco_dd_app_key" \
+            --set datadog.clusterName=rayne \
+            --set datadog.site=datadoghq.com \
+            --set agents.enabled=true \
+            --set clusterAgent.enabled=true \
+            -f "$(dirname "$0")/../helm/values.yaml"
+    else
+        echo "Installing Datadog Agent..."
+        helm install datadog-agent datadog/datadog \
+            --set datadog.apiKey="$TF_VAR_ecco_dd_api_key" \
+            --set datadog.appKey="$TF_VAR_ecco_dd_app_key" \
+            --set datadog.clusterName=rayne \
+            --set datadog.site=datadoghq.com \
+            --set agents.enabled=true \
+            --set clusterAgent.enabled=true \
+            -f "$(dirname "$0")/../helm/values.yaml"
+    fi
+
+    echo "Waiting for Datadog Agent to be ready..."
+    kubectl wait --for=condition=ready pod -l app=datadog-agent --timeout=180s 2>/dev/null || \
+        echo "  Note: Datadog Agent pods may still be starting..."
+
+    # Restart Rayne to pick up the Datadog Agent connection
+    echo ""
+    echo "Restarting Rayne service to connect to Datadog Agent..."
+    kubectl rollout restart deployment/rayne
+    kubectl wait --for=condition=ready pod -l app=rayne --timeout=120s
+fi
 
 # Get service URL
 echo ""
@@ -154,3 +222,47 @@ echo "  kubectl logs -f -l app=rayne"
 echo ""
 echo "Access PostgreSQL:"
 echo "  kubectl exec -it \$(kubectl get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}') -- psql -U rayne -d rayne"
+echo ""
+
+# Verify server is responding
+echo "=== Verifying Server Health ==="
+echo ""
+MAX_RETRIES=10
+RETRY_COUNT=0
+HEALTH_OK=false
+
+while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+    echo "Checking health endpoint (attempt $((RETRY_COUNT + 1))/$MAX_RETRIES)..."
+    if curl -s --connect-timeout 5 "$RAYNE_URL/health" > /dev/null 2>&1; then
+        HEALTH_OK=true
+        break
+    fi
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    sleep 3
+done
+
+if [ "$HEALTH_OK" = true ]; then
+    echo ""
+    echo "✓ Server is healthy and responding!"
+    echo ""
+    echo "Health check response:"
+    curl -s "$RAYNE_URL/health" | head -c 500
+    echo ""
+else
+    echo ""
+    echo "⚠ Warning: Server health check failed after $MAX_RETRIES attempts"
+    echo "Check the logs: kubectl logs -f -l app=rayne"
+fi
+
+echo ""
+echo "=== Checking Datadog Agent Status ==="
+if kubectl get pods -l app=datadog-agent 2>/dev/null | grep -q Running; then
+    echo "✓ Datadog Agent pods are running"
+    kubectl get pods -l app=datadog-agent
+else
+    echo "⚠ Datadog Agent pods may not be running yet"
+    kubectl get pods -l app=datadog-agent 2>/dev/null || echo "  No Datadog Agent pods found"
+fi
+
+echo ""
+echo "=== Setup Complete ==="

@@ -73,11 +73,47 @@ make build
 ### Minikube Deployment
 
 ```bash
-# Edit k8s/datadog-secrets.yaml with your API keys
-vim k8s/datadog-secrets.yaml
+# Set your Datadog API keys (using the expected variable names)
+export TF_VAR_ecco_dd_api_key=your-api-key
+export TF_VAR_ecco_dd_app_key=your-app-key
 
-# Run the setup script
+# Run the setup script (deploys PostgreSQL, Rayne, and Datadog Agent)
 ./scripts/minikube-setup.sh
+```
+
+### Helm Deployment (Datadog Agent)
+
+The Helm chart supports multiple ways to provide Datadog API keys:
+
+**Option 1: Environment variable interpolation with envsubst**
+```bash
+export TF_VAR_ecco_dd_api_key=your-api-key
+export TF_VAR_ecco_dd_app_key=your-app-key
+
+# Substitute variables and install
+envsubst < helm/values.yaml | helm install datadog-agent datadog/datadog -f -
+```
+
+**Option 2: Using --set flags**
+```bash
+helm install datadog-agent datadog/datadog \
+  --set datadog.apiKey=$TF_VAR_ecco_dd_api_key \
+  --set datadog.appKey=$TF_VAR_ecco_dd_app_key \
+  -f helm/values.yaml
+```
+
+**Option 3: Using existing Kubernetes secrets**
+```bash
+# Create secrets first
+kubectl create secret generic datadog-secrets \
+  --from-literal=api-key="$TF_VAR_ecco_dd_api_key" \
+  --from-literal=app-key="$TF_VAR_ecco_dd_app_key"
+
+# Install with secret references
+helm install datadog-agent datadog/datadog \
+  --set datadog.apiKeyExistingSecret=datadog-secrets \
+  --set datadog.appKeyExistingSecret=datadog-secrets \
+  -f helm/values.yaml
 ```
 
 ## API Endpoints
@@ -173,6 +209,46 @@ go test ./services/user/
 # Build
 make build
 ```
+
+## Traffic Generator
+
+Generate realistic API traffic for APM demos with optional failure injection.
+
+```bash
+# Start traffic generator (default 10% failure rate)
+./scripts/traffic-generator.sh start http://localhost:8080
+
+# Start with custom failure rate
+FAILURE_RATE=20 ./scripts/traffic-generator.sh start http://localhost:8080
+
+# Disable failure injection
+FAILURE_RATE=0 ./scripts/traffic-generator.sh start http://localhost:8080
+
+# Check status
+./scripts/traffic-generator.sh status
+
+# Stop
+./scripts/traffic-generator.sh stop
+
+# View logs
+tail -f /tmp/rayne-traffic-generator.log
+```
+
+### Failure Injection
+
+The traffic generator randomly injects 4xx and 5xx errors to simulate real-world error conditions:
+
+**4xx Client Errors:**
+- 404 Not Found (non-existent endpoints, invalid IDs)
+- 400 Bad Request (malformed JSON, empty body)
+- 405 Method Not Allowed (wrong HTTP methods)
+
+**5xx Server Errors:**
+- 500 Internal Server Error (invalid payloads, schema violations)
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `FAILURE_RATE` | 10 | Percentage chance of failure per traffic cycle (0-100) |
 
 ## License
 

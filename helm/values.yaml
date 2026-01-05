@@ -1,0 +1,891 @@
+# Rayne Helm Chart Values
+# Use with: helm install rayne ./helm -f helm/values.yaml
+# Or with envsubst: envsubst < helm/values.yaml | helm install rayne ./helm -f -
+
+# =============================================================================
+# Rayne Application Configuration
+# =============================================================================
+rayne:
+  name: rayne
+  replicaCount: 1
+
+  image:
+    repository: rayne
+    tag: latest
+    pullPolicy: Never  # For minikube local images
+
+  service:
+    type: NodePort
+    port: 8080
+    targetPort: 8080
+
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "500m"
+
+  healthCheck:
+    path: /health
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    liveness:
+      initialDelaySeconds: 15
+      periodSeconds: 20
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+  # APM Configuration
+  apm:
+    service: rayne
+    env: staging
+    version: "1.0.0"
+
+# =============================================================================
+# PostgreSQL Configuration
+# =============================================================================
+postgresql:
+  enabled: true
+  name: postgres
+
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 5432
+
+  # Database credentials - use secrets in production
+  auth:
+    username: rayne
+    password: raynepassword
+    database: rayne
+
+  persistence:
+    enabled: true
+    size: 5Gi
+    accessMode: ReadWriteOnce
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# =============================================================================
+# Datadog Secrets Configuration
+# Uses environment variable interpolation from minikube-setup.sh
+# Deploy with: envsubst < helm/values.yaml | helm install ...
+# Or use --set flags: helm install --set datadog.apiKey=$TF_VAR_ecco_dd_api_key ...
+# =============================================================================
+datadog:
+  # API Keys - interpolated from environment variables
+  # These match the variable names in scripts/minikube-setup.sh
+  apiKey: "${TF_VAR_ecco_dd_api_key}"
+  appKey: "${TF_VAR_ecco_dd_app_key}"
+
+  # Alternative: Reference an existing Kubernetes secret
+  # apiKeyExistingSecret: datadog-secrets
+  # appKeyExistingSecret: datadog-secrets
+
+  secretAnnotations: {}
+
+  # Secret backend configuration (for external secret management)
+  secretBackend:
+    command: ""
+    arguments: ""
+    timeout: ""
+    enableGlobalPermissions: true
+    roles: []
+
+  securityContext:
+    runAsUser: 0
+  hostVolumeMountPropagation: None
+
+  # Cluster configuration
+  clusterName: rayne
+  site: ""  # e.g., datadoghq.com, datadoghq.eu, ddog-gov.com
+  dd_url: ""
+  logLevel: INFO
+
+  # Kubernetes State Metrics
+  kubeStateMetricsEnabled: false
+  kubeStateMetricsNetworkPolicy:
+    create: false
+  kubeStateMetricsCore:
+    enabled: true
+    rbac:
+      create: true
+    ignoreLegacyKSMCheck: true
+    collectSecretMetrics: true
+    collectConfigMaps: true
+    collectVpaMetrics: false
+    collectCrdMetrics: false
+    collectApiServicesMetrics: false
+    useClusterCheckRunners: false
+    labelsAsTags: {}
+    annotationsAsTags: {}
+
+  # Cluster checks
+  clusterChecks:
+    enabled: true
+    shareProcessNamespace: false
+
+  # Tag configuration
+  nodeLabelsAsTags: {}
+  podLabelsAsTags: {}
+  podAnnotationsAsTags: {}
+  namespaceLabelsAsTags: {}
+  namespaceAnnotationsAsTags: {}
+  kubernetesResourcesLabelsAsTags: {}
+  kubernetesResourcesAnnotationsAsTags: {}
+
+  originDetectionUnified:
+    enabled: false
+
+  tags: []
+  checksCardinality: ""
+
+  # Kubelet configuration
+  kubelet:
+    host:
+      valueFrom:
+        fieldRef:
+          fieldPath: status.hostIP
+    tlsVerify: ""
+    hostCAPath: ""
+    agentCAPath: ""
+    podLogsPath: ""
+    coreCheckEnabled: true
+
+  expvarPort: 6000
+
+  # DogStatsD configuration
+  dogstatsd:
+    port: 8125
+    originDetection: false
+    tags: []
+    tagCardinality: low
+    useSocketVolume: true
+    socketPath: /var/run/datadog/dsd.socket
+    hostSocketPath: /var/run/datadog/
+    useHostPort: false
+    useHostPID: false
+    nonLocalTraffic: true
+
+  useHostPID: true
+  collectEvents: true
+
+  # Kubernetes Events configuration
+  kubernetesEvents:
+    filteringEnabled: false
+    unbundleEvents: false
+    collectedEventTypes:
+      - kind: Pod
+        reasons:
+          - Failed
+          - BackOff
+          - Unhealthy
+          - FailedScheduling
+          - FailedMount
+          - FailedAttachVolume
+      - kind: Node
+        reasons:
+          - TerminatingEvictedPod
+          - NodeNotReady
+          - Rebooted
+          - HostPortConflict
+      - kind: CronJob
+        reasons:
+          - SawCompletedJob
+
+  clusterTagger:
+    collectKubernetesTags: false
+
+  leaderElection: true
+  leaderLeaseDuration: ""
+  leaderElectionResource: configmap
+
+  remoteConfiguration:
+    enabled: true
+
+  # Logs configuration
+  logs:
+    enabled: false
+    containerCollectAll: false
+    containerCollectUsingFiles: true
+    autoMultiLineDetection: false
+
+  # APM configuration
+  apm:
+    socketEnabled: true
+    portEnabled: true
+    enabled: true
+    port: 8126
+    useSocketVolume: false
+    socketPath: /var/run/datadog/apm.socket
+    hostSocketPath: /var/run/datadog/
+    instrumentation:
+      enabled: false
+      enabledNamespaces: []
+      disabledNamespaces: []
+      libVersions: {}
+      skipKPITelemetry: false
+      language_detection:
+        enabled: true
+
+  # Application Security Monitoring
+  asm:
+    threats:
+      enabled: false
+    sca:
+      enabled: false
+    iast:
+      enabled: false
+
+  # OpenTelemetry Collector
+  otelCollector:
+    enabled: false
+    ports:
+      - containerPort: "4317"
+        name: otel-grpc
+      - containerPort: "4318"
+        name: otel-http
+    config: {}
+
+  # OTLP configuration
+  otlp:
+    receiver:
+      protocols:
+        grpc:
+          enabled: false
+          endpoint: "0.0.0.0:4317"
+          useHostPort: true
+        http:
+          enabled: false
+          endpoint: "0.0.0.0:4318"
+          useHostPort: true
+    logs:
+      enabled: false
+
+  profiling:
+    enabled: null
+
+  envFrom: []
+  env: []
+  envDict: {}
+  confd: {}
+  checksd: {}
+
+  dockerSocketPath: ""
+  criSocketPath: ""
+
+  containerRuntimeSupport:
+    enabled: true
+
+  # Process Agent
+  processAgent:
+    enabled: true
+    processCollection: false
+    stripProcessArguments: false
+    processDiscovery: true
+    runInCoreAgent: false
+    containerCollection: true
+
+  osReleasePath: /etc/os-release
+
+  # System Probe
+  systemProbe:
+    debugPort: 0
+    enableConntrack: true
+    seccomp: localhost/system-probe
+    seccompRoot: /var/lib/kubelet/seccomp
+    bpfDebug: false
+    apparmor: unconfined
+    enableTCPQueueLength: false
+    enableOOMKill: false
+    mountPackageManagementDirs: []
+    runtimeCompilationAssetDir: /var/tmp/datadog-agent/system-probe
+    btfPath: ""
+    collectDNSStats: true
+    maxTrackedConnections: 131072
+    conntrackMaxStateSize: 131072
+    conntrackInitTimeout: 10s
+    enableDefaultOsReleasePaths: true
+    enableDefaultKernelHeadersPaths: true
+
+  containerImageCollection:
+    enabled: true
+
+  orchestratorExplorer:
+    enabled: true
+    container_scrubbing:
+      enabled: true
+    customResources: []
+
+  helmCheck:
+    enabled: false
+    collectEvents: false
+    valuesAsTags: {}
+
+  networkMonitoring:
+    enabled: false
+
+  serviceMonitoring:
+    enabled: false
+
+  sbom:
+    containerImage:
+      enabled: false
+      uncompressedLayersSupport: false
+    host:
+      enabled: false
+
+  # Security Agent
+  securityAgent:
+    compliance:
+      enabled: false
+      configMap: ""
+      checkInterval: 20m
+      xccdf:
+        enabled: false
+      host_benchmarks:
+        enabled: true
+    runtime:
+      enabled: false
+      fimEnabled: false
+      useSecruntimeTrack: true
+      policies:
+        configMap: ""
+      syscallMonitor:
+        enabled: false
+      network:
+        enabled: true
+      activityDump:
+        enabled: true
+        tracedCgroupsCount: 3
+        cgroupDumpTimeout: 20
+        cgroupWaitListSize: 0
+        pathMerge:
+          enabled: false
+      securityProfile:
+        enabled: true
+        anomalyDetection:
+          enabled: true
+        autoSuppression:
+          enabled: true
+
+  # Network Policy
+  networkPolicy:
+    create: false
+    flavor: kubernetes
+    cilium:
+      dnsSelector:
+        toEndpoints:
+          - matchLabels:
+              "k8s:io.kubernetes.pod.namespace": kube-system
+              "k8s:k8s-app": kube-dns
+
+  # Prometheus Scraping
+  prometheusScrape:
+    enabled: false
+    serviceEndpoints: false
+    additionalConfigs: []
+    version: 2
+
+  ignoreAutoConfig: []
+  containerExclude: ""
+  containerInclude: ""
+  containerExcludeLogs: ""
+  containerIncludeLogs: ""
+  containerExcludeMetrics: ""
+  containerIncludeMetrics: ""
+  excludePauseContainer: true
+
+  containerLifecycle:
+    enabled: true
+
+# =============================================================================
+# Cluster Agent Configuration
+# =============================================================================
+clusterAgent:
+  enabled: true
+  shareProcessNamespace: false
+
+  image:
+    name: cluster-agent
+    tag: 7.57.2
+    digest: ""
+    repository: ""
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+    doNotCheckTag: ""
+
+  securityContext: {}
+
+  containers:
+    clusterAgent:
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+    initContainers:
+      securityContext: {}
+
+  command: []
+  token: ""
+  tokenExistingSecret: ""
+  replicas: 1
+  revisionHistoryLimit: 10
+
+  rbac:
+    create: true
+    flareAdditionalPermissions: true
+    serviceAccountName: default
+    serviceAccountAnnotations: {}
+    automountServiceAccountToken: true
+
+  podSecurity:
+    podSecurityPolicy:
+      create: false
+    securityContextConstraints:
+      create: false
+
+  metricsProvider:
+    enabled: false
+    registerAPIService: true
+    wpaController: false
+    useDatadogMetrics: false
+    createReaderRbac: true
+    aggregator: avg
+    service:
+      type: ClusterIP
+      port: 8443
+    endpoint: ""
+
+  env: []
+  envFrom: []
+  envDict: {}
+
+  admissionController:
+    enabled: true
+    webhookName: datadog-webhook
+    mutateUnlabelled: false
+    configMode: ""
+    failurePolicy: Ignore
+    containerRegistry: ""
+    remoteInstrumentation:
+      enabled: false
+    port: 8000
+    agentSidecarInjection:
+      enabled: false
+      provider: ""
+      clusterAgentCommunicationEnabled: true
+      containerRegistry: ""
+      imageName: ""
+      imageTag: ""
+      selectors: []
+      profiles: []
+
+  confd: {}
+  advancedConfd: {}
+  resources: {}
+  priorityClassName: ""
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  healthPort: 5556
+
+  livenessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 15
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 6
+
+  readinessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 15
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 6
+
+  startupProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 15
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 6
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  deploymentAnnotations: {}
+  podAnnotations: {}
+  useHostNetwork: false
+  dnsConfig: {}
+  volumes: []
+  volumeMounts: []
+  datadog_cluster_yaml: {}
+  createPodDisruptionBudget: false
+
+  networkPolicy:
+    create: false
+
+  additionalLabels: {}
+  containerExclude: ""
+  containerInclude: ""
+
+# =============================================================================
+# Existing Cluster Agent (for joining existing cluster)
+# =============================================================================
+existingClusterAgent:
+  join: false
+  tokenSecretName: ""
+  serviceName: ""
+  clusterchecksEnabled: true
+
+# =============================================================================
+# FIPS Configuration
+# =============================================================================
+fips:
+  enabled: false
+  port: 9803
+  portRange: 15
+  use_https: false
+  resources: {}
+  local_address: "127.0.0.1"
+  image:
+    name: fips-proxy
+    tag: 1.1.5
+    pullPolicy: IfNotPresent
+    digest: ""
+    repository: ""
+  customFipsConfig: {}
+
+# =============================================================================
+# Agents Configuration
+# =============================================================================
+agents:
+  enabled: true
+  shareProcessNamespace: false
+  revisionHistoryLimit: 10
+
+  image:
+    name: agent
+    tag: 7.57.2
+    digest: ""
+    tagSuffix: ""
+    repository: ""
+    doNotCheckTag: ""
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+
+  rbac:
+    create: true
+    serviceAccountName: default
+    serviceAccountAnnotations: {}
+    automountServiceAccountToken: true
+
+  podSecurity:
+    podSecurityPolicy:
+      create: false
+    securityContextConstraints:
+      create: false
+    seLinuxContext:
+      rule: MustRunAs
+      seLinuxOptions:
+        user: system_u
+        role: system_r
+        type: spc_t
+        level: s0
+    privileged: false
+    capabilities:
+      - SYS_ADMIN
+      - SYS_RESOURCE
+      - SYS_PTRACE
+      - NET_ADMIN
+      - NET_BROADCAST
+      - NET_RAW
+      - IPC_LOCK
+      - CHOWN
+      - AUDIT_CONTROL
+      - AUDIT_READ
+      - DAC_READ_SEARCH
+    allowedUnsafeSysctls: []
+    volumes:
+      - configMap
+      - downwardAPI
+      - emptyDir
+      - hostPath
+      - secret
+    seccompProfiles:
+      - "runtime/default"
+      - "localhost/system-probe"
+    apparmor:
+      enabled: true
+    apparmorProfiles:
+      - "runtime/default"
+      - "unconfined"
+    defaultApparmor: runtime/default
+
+  containers:
+    agent:
+      env: []
+      envFrom: []
+      envDict: {}
+      logLevel: ""
+      resources: {}
+      healthPort: 5555
+      livenessProbe:
+        initialDelaySeconds: 15
+        periodSeconds: 15
+        timeoutSeconds: 5
+        successThreshold: 1
+        failureThreshold: 6
+      readinessProbe:
+        initialDelaySeconds: 15
+        periodSeconds: 15
+        timeoutSeconds: 5
+        successThreshold: 1
+        failureThreshold: 6
+      startupProbe:
+        initialDelaySeconds: 15
+        periodSeconds: 15
+        timeoutSeconds: 5
+        successThreshold: 1
+        failureThreshold: 6
+      securityContext: {}
+      ports: []
+    processAgent:
+      env:
+        - name: "DD_ORCHESTRATOR_EXPLORER_EXTRA_TAGS"
+          value: "platform:bare_metal, env:development"
+      envFrom: []
+      envDict: {}
+      logLevel: ""
+      resources: {}
+      securityContext: {}
+      ports: []
+    otelAgent:
+      env: []
+      envFrom: []
+      envDict: {}
+      resources: {}
+      securityContext: {}
+      ports: []
+    traceAgent:
+      env: []
+      envFrom: []
+      envDict: {}
+      logLevel: ""
+      resources: {}
+      livenessProbe:
+        initialDelaySeconds: 15
+        periodSeconds: 15
+        timeoutSeconds: 5
+      securityContext: {}
+      ports: []
+    systemProbe:
+      env: []
+      envFrom: []
+      envDict: {}
+      logLevel: ""
+      resources: {}
+      securityContext:
+        privileged: false
+        capabilities:
+          add:
+            - SYS_ADMIN
+            - SYS_RESOURCE
+            - SYS_PTRACE
+            - NET_ADMIN
+            - NET_BROADCAST
+            - NET_RAW
+            - IPC_LOCK
+            - CHOWN
+            - DAC_READ_SEARCH
+      ports: []
+    securityAgent:
+      env: []
+      envFrom: []
+      envDict: {}
+      logLevel: ""
+      resources: {}
+      ports: []
+    initContainers:
+      resources: {}
+      securityContext: {}
+      volumeMounts: []
+
+  volumes: []
+  volumeMounts: []
+  useHostNetwork: false
+  dnsConfig: {}
+  daemonsetAnnotations: {}
+  podAnnotations: {}
+  tolerations: []
+  nodeSelector: {}
+  affinity: {}
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: "10%"
+
+  priorityClassCreate: false
+  priorityClassName: ""
+  priorityPreemptionPolicyValue: PreemptLowerPriority
+  priorityClassValue: 1000000000
+  podLabels: {}
+  additionalLabels: {}
+  useConfigMap: ""
+  customAgentConfig: {}
+
+  networkPolicy:
+    create: false
+
+  localService:
+    overrideName: ""
+    forceLocalServiceEnabled: false
+
+# =============================================================================
+# Cluster Checks Runner Configuration
+# =============================================================================
+clusterChecksRunner:
+  enabled: false
+
+  image:
+    name: agent
+    tag: 7.57.2
+    digest: ""
+    tagSuffix: ""
+    repository: ""
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+
+  createPodDisruptionBudget: false
+
+  rbac:
+    create: true
+    dedicated: false
+    serviceAccountAnnotations: {}
+    automountServiceAccountToken: true
+    serviceAccountName: default
+
+  replicas: 2
+  revisionHistoryLimit: 10
+  resources: {}
+  affinity: {}
+  topologySpreadConstraints: []
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  dnsConfig: {}
+  priorityClassName: ""
+  nodeSelector: {}
+  tolerations: []
+  healthPort: 5557
+
+  livenessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 15
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 6
+
+  readinessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 15
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 6
+
+  startupProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 15
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 6
+
+  deploymentAnnotations: {}
+  podAnnotations: {}
+  env: []
+  envFrom: []
+  envDict: {}
+  volumes: []
+  volumeMounts: []
+
+  networkPolicy:
+    create: false
+
+  additionalLabels: {}
+  securityContext: {}
+  ports: []
+
+# =============================================================================
+# Datadog CRDs
+# =============================================================================
+datadog-crds:
+  crds:
+    datadogMetrics: true
+    datadogPodAutoscalers: true
+
+# =============================================================================
+# Kube State Metrics
+# =============================================================================
+kube-state-metrics:
+  image:
+    repository: registry.k8s.io/kube-state-metrics/kube-state-metrics
+  rbac:
+    create: true
+  serviceAccount:
+    create: true
+    name: ""
+  resources: {}
+  nodeSelector:
+    kubernetes.io/os: linux
+
+# =============================================================================
+# Cloud Providers Configuration
+# =============================================================================
+providers:
+  gke:
+    autopilot: false
+    cos: false
+  eks:
+    ec2:
+      useHostnameFromFile: false
+  aks:
+    enabled: false
+
+# =============================================================================
+# Remote Configuration
+# =============================================================================
+remoteConfiguration:
+  enabled: true
+
+# =============================================================================
+# Global Settings
+# =============================================================================
+nameOverride: ""
+fullnameOverride: ""
+targetSystem: "linux"
+commonLabels: {}
+registry: ""

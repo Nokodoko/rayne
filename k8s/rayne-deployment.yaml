@@ -50,6 +50,19 @@ spec:
                 secretKeyRef:
                   name: datadog-secrets
                   key: app-key
+            # APM Configuration - use node IP for DaemonSet agent
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: DD_TRACE_AGENT_PORT
+              value: "8126"
+            - name: DD_SERVICE
+              value: "rayne"
+            - name: DD_ENV
+              value: "staging"
+            - name: DD_VERSION
+              value: "1.0.0"
           resources:
             requests:
               memory: "64Mi"
