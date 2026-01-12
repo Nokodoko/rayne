@@ -500,7 +500,52 @@ clusterAgent:
       selectors: []
       profiles: []
 
-  confd: {}
+  confd:
+    postgres.yaml: |-
+      cluster_check: true
+      init_config:
+      instances:
+        - dbm: true
+          host: postgres-service
+          port: 5432
+          username: datadog
+          password: 'datadog_dbm_password'
+          # Query metrics collection
+          collect_activity_metrics: true
+          collect_database_size_metrics: true
+          collect_default_database: true
+          # Function and bloat metrics
+          collect_function_metrics: true
+          collect_bloat_metrics: true
+          # WAL metrics (disabled - requires data_directory access)
+          collect_wal_metrics: false
+          # Count metrics
+          collect_count_metrics: true
+          # Relation metrics (table/index statistics)
+          relations:
+            - relation_regex: '.*'
+              schemas:
+                - public
+              relkind:
+                - r  # regular tables
+                - i  # indexes
+                - t  # TOAST tables
+                - p  # partitioned tables
+          # Database autodiscovery
+          database_autodiscovery:
+            enabled: true
+            include:
+              - '.*'
+          # Query samples and explain plans
+          query_samples:
+            enabled: true
+          query_metrics:
+            enabled: true
+          # Custom tags
+          tags:
+            - 'env:staging'
+            - 'service:rayne-postgres'
+            - 'team:platform'
   advancedConfd: {}
   resources: {}
   priorityClassName: ""
@@ -775,7 +820,7 @@ agents:
 # Cluster Checks Runner Configuration
 # =============================================================================
 clusterChecksRunner:
-  enabled: false
+  enabled: true
 
   image:
     name: agent
