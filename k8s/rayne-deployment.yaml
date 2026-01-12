@@ -50,11 +50,9 @@ spec:
                 secretKeyRef:
                   name: datadog-secrets
                   key: app-key
-            # APM Configuration - use node IP for DaemonSet agent
+            # APM Configuration - use Datadog Agent ClusterIP service
             - name: DD_AGENT_HOST
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.hostIP
+              value: "datadog-agent"
             - name: DD_TRACE_AGENT_PORT
               value: "8126"
             - name: DD_SERVICE

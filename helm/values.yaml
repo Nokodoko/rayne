@@ -113,9 +113,14 @@ datadog:
 
   # Cluster configuration
   clusterName: rayne
-  site: ""  # e.g., datadoghq.com, datadoghq.eu, ddog-gov.com
+  site: datadoghq.com
   dd_url: ""
   logLevel: INFO
+
+  # Skip SSL validation for testing with future-dated system clock
+  env:
+    - name: DD_SKIP_SSL_VALIDATION
+      value: "true"
 
   # Kubernetes State Metrics
   kubeStateMetricsEnabled: false
@@ -643,7 +648,9 @@ agents:
 
   containers:
     agent:
-      env: []
+      env:
+        - name: DD_SKIP_SSL_VALIDATION
+          value: "true"
       envFrom: []
       envDict: {}
       logLevel: ""
@@ -687,7 +694,9 @@ agents:
       securityContext: {}
       ports: []
     traceAgent:
-      env: []
+      env:
+        - name: DD_SKIP_SSL_VALIDATION
+          value: "true"
       envFrom: []
       envDict: {}
       logLevel: ""
@@ -752,7 +761,8 @@ agents:
   podLabels: {}
   additionalLabels: {}
   useConfigMap: ""
-  customAgentConfig: {}
+  customAgentConfig:
+    skip_ssl_validation: true
 
   networkPolicy:
     create: false

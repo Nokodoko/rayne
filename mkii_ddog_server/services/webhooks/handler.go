@@ -1,9 +1,13 @@
 package webhooks
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
+	"os"
 	"strconv"
+	"time"
 
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/requests"
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/urls"
@@ -23,6 +27,41 @@ func NewHandler(storage *Storage, processor *Processor) *Handler {
 	}
 }
 
+// sendDesktopNotification sends a notification to the local notify-server
+// The server URL is configured via NOTIFY_SERVER_URL env var (default: http://host.minikube.internal:9999)
+func sendDesktopNotification(title, message string) {
+	serverURL := os.Getenv("NOTIFY_SERVER_URL")
+	if serverURL == "" {
+		serverURL = "http://host.minikube.internal:9999"
+	}
+
+	payload := map[string]string{
+		"title":   title,
+		"message": message,
+		"urgency": "critical",
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[WEBHOOK] Failed to marshal notification payload: %v", err)
+		return
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(serverURL, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("[WEBHOOK] Failed to send notification to %s: %v", serverURL, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		log.Printf("[WEBHOOK] Desktop notification sent: %s", title)
+	} else {
+		log.Printf("[WEBHOOK] Notification server returned status %d", resp.StatusCode)
+	}
+}
+
 // ReceiveWebhook handles incoming webhooks from Datadog
 func (h *Handler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) (int, any) {
 	var payload WebhookPayload
@@ -30,11 +69,29 @@ func (h *Handler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) (int, a
 		return http.StatusBadRequest, map[string]string{"error": "invalid payload: " + err.Error()}
 	}
 
+	// Log the received payload
+	payloadJSON, _ := json.MarshalIndent(payload, "", "  ")
+	log.Printf("[WEBHOOK] Received payload:\n%s", string(payloadJSON))
+
 	// Store the event
 	event, err := h.storage.StoreEvent(payload)
 	if err != nil {
 		return http.StatusInternalServerError, map[string]string{"error": "failed to store event: " + err.Error()}
 	}
+
+	log.Printf("[WEBHOOK] Stored event ID: %d, Monitor: %s (%d), Status: %s",
+		event.ID, payload.MonitorName, payload.MonitorID, payload.AlertStatus)
+
+	// Send desktop notification
+	notifyTitle := payload.MonitorName
+	if notifyTitle == "" {
+		notifyTitle = "Datadog Webhook"
+	}
+	notifyMsg := payload.AlertStatus
+	if payload.AlertMessage != "" {
+		notifyMsg = payload.AlertMessage
+	}
+	go sendDesktopNotification(notifyTitle, notifyMsg)
 
 	// Process asynchronously
 	go h.processor.Process(event)

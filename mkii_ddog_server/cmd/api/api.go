@@ -152,8 +152,12 @@ func (d *DDogServer) Run() error {
 	`, d.addr)
 
 	// Wrap router with Datadog APM tracing middleware
+	// Mark 4xx and 5xx responses as errors for APM visibility
 	tracedRouter := httptrace.WrapHandler(router, "rayne", "/",
 		httptrace.WithSpanOptions(),
+		httptrace.WithStatusCheck(func(statusCode int) bool {
+			return statusCode >= 400
+		}),
 	)
 
 	return http.ListenAndServe(d.addr, tracedRouter)

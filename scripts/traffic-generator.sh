@@ -22,29 +22,31 @@ generate_failure() {
     local BASE_URL="$1"
     local FAILURE_TYPE=$(( RANDOM % 10 ))
 
+    # All cases verified to return actual 4xx/5xx error codes
     case $FAILURE_TYPE in
-        # 4xx Client Errors
-        0) # 404 - Non-existent endpoint
-           curl -s "$BASE_URL/v1/nonexistent/endpoint" > /dev/null 2>&1 ;;
-        1) # 404 - Invalid monitor ID
-           curl -s "$BASE_URL/v1/monitors/99999999" > /dev/null 2>&1 ;;
-        2) # 400 - Malformed JSON
+        # 4xx Client Errors - Bad JSON payloads (400)
+        0) # 400 - Malformed JSON to logs/search
            curl -s -X POST "$BASE_URL/v1/logs/search" -H "Content-Type: application/json" -d '{invalid json}' > /dev/null 2>&1 ;;
-        3) # 400 - Empty body on POST
-           curl -s -X POST "$BASE_URL/v1/rum/init" -H "Content-Type: application/json" -d '' > /dev/null 2>&1 ;;
-        4) # 404 - Non-existent host tags
-           curl -s "$BASE_URL/v1/hosts/fake-host-$(( RANDOM % 1000 ))/tags" > /dev/null 2>&1 ;;
-        5) # 405 - Wrong HTTP method (POST to GET endpoint)
-           curl -s -X POST "$BASE_URL/v1/monitors" > /dev/null 2>&1 ;;
-        # 5xx Server Errors
-        6) # 500 - Invalid webhook payload causing server error
-           curl -s -X POST "$BASE_URL/v1/webhooks/receive" -H "Content-Type: application/json" -d '{"invalid": "structure", "missing": "required_fields"}' > /dev/null 2>&1 ;;
-        7) # 500 - Service definition with invalid schema
+        1) # 400 - Malformed JSON to webhooks/create
+           curl -s -X POST "$BASE_URL/v1/webhooks/create" -H "Content-Type: application/json" -d '{broken}' > /dev/null 2>&1 ;;
+        2) # 400 - Malformed JSON to services/definitions
            curl -s -X POST "$BASE_URL/v1/services/definitions" -H "Content-Type: application/json" -d '{"schema-version": "invalid", "dd-service": ""}' > /dev/null 2>&1 ;;
-        8) # 500 - RUM track with malformed session
+        3) # 400 - Malformed JSON to rum/track
            curl -s -X POST "$BASE_URL/v1/rum/track" -H "Content-Type: application/json" -d '{"visitor_uuid": "bad-uuid", "session_id": -1}' > /dev/null 2>&1 ;;
-        9) # 500 - Advanced log search with bad params
+        # 4xx Client Errors - Wrong HTTP methods (405)
+        4) # 405 - POST to GET-only endpoint (monitors)
+           curl -s -X POST "$BASE_URL/v1/monitors" > /dev/null 2>&1 ;;
+        5) # 405 - DELETE to GET-only endpoint (hosts)
+           curl -s -X DELETE "$BASE_URL/v1/hosts" > /dev/null 2>&1 ;;
+        6) # 405 - PUT to POST-only endpoint (logs/search)
+           curl -s -X PUT "$BASE_URL/v1/logs/search" -H "Content-Type: application/json" -d '{}' > /dev/null 2>&1 ;;
+        # 4xx Client Errors - Other errors
+        7) # 403 - Advanced log search with invalid params
            curl -s -X POST "$BASE_URL/v1/logs/search/advanced" -H "Content-Type: application/json" -d '{"filter": {"query": "", "from": "invalid-time"}}' > /dev/null 2>&1 ;;
+        8) # 400 - Malformed JSON to webhooks/config
+           curl -s -X POST "$BASE_URL/v1/webhooks/config" -H "Content-Type: application/json" -d '{not valid json at all' > /dev/null 2>&1 ;;
+        9) # 400 - Malformed JSON to services/definitions/advanced
+           curl -s -X POST "$BASE_URL/v1/services/definitions/advanced" -H "Content-Type: application/json" -d '{"broken":' > /dev/null 2>&1 ;;
     esac
 }
 

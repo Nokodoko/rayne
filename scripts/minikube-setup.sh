@@ -79,18 +79,7 @@ kubectl create secret generic datadog-secrets \
     --from-literal=app-key="$TF_VAR_ecco_dd_app_key" \
     --dry-run=client -o yaml | kubectl apply -f -
 
-kubectl apply -f rayne-deployment.yaml
-
-echo "Waiting for Rayne pod to be created..."
-sleep 5
-until kubectl get pods -l app=rayne 2>/dev/null | grep -q rayne; do
-    echo "  Waiting for pod to appear..."
-    sleep 2
-done
-echo "Waiting for Rayne to be ready..."
-kubectl wait --for=condition=ready pod -l app=rayne --timeout=120s
-
-# Install Datadog Agent using Helm
+# Install Datadog Agent FIRST (before Rayne) so the service is available
 echo ""
 echo "=== Installing Datadog Agent ==="
 
@@ -98,6 +87,7 @@ echo "=== Installing Datadog Agent ==="
 if ! command -v helm &> /dev/null; then
     echo "Warning: helm is not installed. Skipping Datadog Agent installation."
     echo "To install helm: https://helm.sh/docs/intro/install/"
+    echo "APM tracing will not work without the Datadog Agent."
 else
     # Add Datadog Helm repository
     echo "Adding Datadog Helm repository..."
@@ -131,12 +121,28 @@ else
     kubectl wait --for=condition=ready pod -l app=datadog-agent --timeout=180s 2>/dev/null || \
         echo "  Note: Datadog Agent pods may still be starting..."
 
-    # Restart Rayne to pick up the Datadog Agent connection
-    echo ""
-    echo "Restarting Rayne service to connect to Datadog Agent..."
-    kubectl rollout restart deployment/rayne
-    kubectl wait --for=condition=ready pod -l app=rayne --timeout=120s
+    # Wait for the datadog-agent service to be available
+    echo "Waiting for Datadog Agent service to be available..."
+    until kubectl get svc datadog-agent 2>/dev/null | grep -q datadog-agent; do
+        echo "  Waiting for datadog-agent service..."
+        sleep 2
+    done
+    echo "✓ Datadog Agent service is available"
 fi
+
+# Now deploy Rayne (after Datadog Agent is ready)
+echo ""
+echo "=== Deploying Rayne ==="
+kubectl apply -f rayne-deployment.yaml
+
+echo "Waiting for Rayne pod to be created..."
+sleep 5
+until kubectl get pods -l app=rayne 2>/dev/null | grep -q rayne; do
+    echo "  Waiting for pod to appear..."
+    sleep 2
+done
+echo "Waiting for Rayne to be ready..."
+kubectl wait --for=condition=ready pod -l app=rayne --timeout=120s
 
 # Get service URL
 echo ""
@@ -262,6 +268,25 @@ if kubectl get pods -l app=datadog-agent 2>/dev/null | grep -q Running; then
 else
     echo "⚠ Datadog Agent pods may not be running yet"
     kubectl get pods -l app=datadog-agent 2>/dev/null || echo "  No Datadog Agent pods found"
+fi
+
+echo ""
+echo "=== Verifying APM Trace Connectivity ==="
+# Generate a request to trigger tracer initialization
+curl -s "$RAYNE_URL/health" > /dev/null 2>&1
+sleep 3
+
+# Check for trace errors in Rayne logs
+if kubectl logs -l app=rayne --tail=50 2>&1 | grep -q "Datadog APM tracer started"; then
+    echo "✓ APM tracer started successfully"
+    kubectl logs -l app=rayne --tail=50 2>&1 | grep "Datadog APM tracer started"
+elif kubectl logs -l app=rayne --tail=50 2>&1 | grep -q "lost.*traces"; then
+    echo "⚠ APM trace errors detected - agent may not be reachable"
+    kubectl logs -l app=rayne --tail=50 2>&1 | grep "lost.*traces" | tail -1
+    echo ""
+    echo "Try restarting Rayne: kubectl rollout restart deployment/rayne"
+else
+    echo "⚠ APM tracer status unknown - check logs"
 fi
 
 echo ""

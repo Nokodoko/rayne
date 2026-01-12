@@ -1,0 +1,13 @@
+# Cloudflare Tunnel - exposes rayne-service to the internet
+# No authentication required for quick tunnels
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tunnel
+  labels:
+    app: tunnel
+spec:
+  containers:
+  - name: cloudflared
+    image: cloudflare/cloudflared:latest
+    command: ["cloudflared", "tunnel", "--url", "http://rayne-service:8080"]
