@@ -15,6 +15,17 @@ spec:
       labels:
         app: rayne
         version: v1
+        tags.datadoghq.com/env: "staging"
+        tags.datadoghq.com/service: "rayne"
+        tags.datadoghq.com/version: "1.0.0"
+      annotations:
+        # Datadog Log Collection - collect logs from stdout/stderr
+        ad.datadoghq.com/rayne.logs: |
+          [{
+            "source": "go",
+            "service": "rayne",
+            "tags": ["env:staging", "version:1.0.0"]
+          }]
     spec:
       containers:
         - name: rayne

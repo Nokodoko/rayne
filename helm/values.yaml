@@ -166,7 +166,7 @@ datadog:
       valueFrom:
         fieldRef:
           fieldPath: status.hostIP
-    tlsVerify: ""
+    tlsVerify: false
     hostCAPath: ""
     agentCAPath: ""
     podLogsPath: ""
@@ -225,10 +225,10 @@ datadog:
 
   # Logs configuration
   logs:
-    enabled: false
-    containerCollectAll: false
+    enabled: true
+    containerCollectAll: true
     containerCollectUsingFiles: true
-    autoMultiLineDetection: false
+    autoMultiLineDetection: true
 
   # APM configuration
   apm:
@@ -280,7 +280,7 @@ datadog:
           endpoint: "0.0.0.0:4318"
           useHostPort: true
     logs:
-      enabled: false
+      enabled: true
 
   profiling:
     enabled: null

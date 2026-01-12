@@ -128,6 +128,24 @@ else
         sleep 2
     done
     echo "✓ Datadog Agent service is available"
+
+    # Wait for agent to actually respond on port 8126
+    echo "Waiting for Datadog Agent APM endpoint to be ready..."
+    AGENT_READY=false
+    for i in $(seq 1 30); do
+        if kubectl run curl-test --rm -i --restart=Never --image=curlimages/curl:latest -- \
+            curl -s --connect-timeout 2 http://datadog-agent:8126/info > /dev/null 2>&1; then
+            AGENT_READY=true
+            break
+        fi
+        echo "  Waiting for APM endpoint (attempt $i/30)..."
+        sleep 3
+    done
+    if [ "$AGENT_READY" = true ]; then
+        echo "✓ Datadog Agent APM endpoint is ready"
+    else
+        echo "⚠ Warning: Agent APM endpoint may not be ready yet"
+    fi
 fi
 
 # Now deploy Rayne (after Datadog Agent is ready)

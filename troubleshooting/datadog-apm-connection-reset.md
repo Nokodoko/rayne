@@ -541,6 +541,7 @@ Fixed `scripts/minikube-setup.sh` to deploy in the correct order:
 The key changes:
 - Moved Helm install of Datadog Agent BEFORE Rayne deployment
 - Added explicit wait for `datadog-agent` service to be available
+- Added APM endpoint readiness check (curl to port 8126) before deploying Rayne
 - Removed the "restart Rayne" step (no longer needed since agent is ready first)
 
 ## Verification
@@ -566,4 +567,69 @@ kubectl logs -l app=rayne --tail=20 | grep "Datadog APM tracer started"
 Expected output:
 ```
 Datadog APM tracer started: service=rayne env=staging version=1.0.0 agent=datadog-agent
+```
+
+---
+
+# Agent Service Ready But APM Endpoint Not Responding
+
+## Symptoms
+
+After minikube setup, Rayne shows trace connection errors even though the `datadog-agent` service exists:
+
+```
+Datadog Tracer v1.74.8 ERROR: lost 4 traces: Post "http://datadog-agent:8126/v0.4/traces":
+dial tcp 10.104.219.233:8126: connect: connection refused
+```
+
+The agent pod is running (3/3 containers) but the APM endpoint on port 8126 isn't ready yet.
+
+## Root Cause
+
+The Kubernetes service is created before the agent containers are fully ready to accept connections. The `kubectl wait --for=condition=ready` checks pod readiness, but the trace-agent container may take additional time to start listening on port 8126.
+
+## Solution
+
+Added APM endpoint readiness check in `scripts/minikube-setup.sh`:
+
+```bash
+# Wait for agent to actually respond on port 8126
+echo "Waiting for Datadog Agent APM endpoint to be ready..."
+AGENT_READY=false
+for i in $(seq 1 30); do
+    if kubectl run curl-test --rm -i --restart=Never --image=curlimages/curl:latest -- \
+        curl -s --connect-timeout 2 http://datadog-agent:8126/info > /dev/null 2>&1; then
+        AGENT_READY=true
+        break
+    fi
+    echo "  Waiting for APM endpoint (attempt $i/30)..."
+    sleep 3
+done
+```
+
+This ensures the trace-agent is actually accepting connections before deploying Rayne.
+
+## Quick Fix
+
+If you see this after setup, just restart Rayne:
+
+```bash
+kubectl rollout restart deployment/rayne
+```
+
+## Verification
+
+Test connectivity manually:
+
+```bash
+kubectl exec -it $(kubectl get pod -l app=rayne -o jsonpath='{.items[0].metadata.name}') -- \
+    wget -q -O- http://datadog-agent:8126/info | head -5
+```
+
+Should return:
+```json
+{
+    "version": "7.57.2",
+    ...
+}
 ```
