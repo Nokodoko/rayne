@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  labels:
+    app: ollama
+    tags.datadoghq.com/env: "staging"
+    tags.datadoghq.com/service: "ollama"
+    tags.datadoghq.com/version: "1.0.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+        tags.datadoghq.com/env: "staging"
+        tags.datadoghq.com/service: "ollama"
+        tags.datadoghq.com/version: "1.0.0"
+      annotations:
+        # Datadog Log Collection
+        ad.datadoghq.com/ollama.logs: |
+          [{
+            "source": "ollama",
+            "service": "ollama",
+            "tags": ["env:staging", "model:gemma"]
+          }]
+        # Datadog HTTP Check autodiscovery
+        ad.datadoghq.com/ollama.checks: |
+          {
+            "http_check": {
+              "init_config": {},
+              "instances": [
+                {
+                  "name": "ollama_api",
+                  "url": "http://%%host%%:11434/api/tags",
+                  "method": "GET",
+                  "timeout": 15,
+                  "tags": ["env:staging", "service:ollama", "model:gemma"]
+                }
+              ]
+            }
+          }
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+              name: http
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0:11434"
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "8Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: ollama-storage
+              mountPath: /root/.ollama
+          # Pull gemma model on startup
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - "ollama pull gemma:2b"
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+      volumes:
+        - name: ollama-storage
+          persistentVolumeClaim:
+            claimName: ollama-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  labels:
+    app: ollama
+    tags.datadoghq.com/env: "staging"
+    tags.datadoghq.com/service: "ollama"
+spec:
+  selector:
+    app: ollama
+  ports:
+    - protocol: TCP
+      port: 11434
+      targetPort: 11434
+      name: http
+  type: ClusterIP

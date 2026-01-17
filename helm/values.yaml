@@ -88,6 +88,10 @@ postgresql:
 # Or use --set flags: helm install --set datadog.apiKey=$TF_VAR_ecco_dd_api_key ...
 # =============================================================================
 datadog:
+  # Disable operator to use traditional DaemonSet deployment
+  operator:
+    enabled: false
+
   # API Keys - interpolated from environment variables
   # These match the variable names in scripts/minikube-setup.sh
   apiKey: "${TF_VAR_ecco_dd_api_key}"
@@ -521,16 +525,12 @@ clusterAgent:
           collect_wal_metrics: false
           # Count metrics
           collect_count_metrics: true
+          # Schema collection
+          collect_schemas:
+            enabled: true
           # Relation metrics (table/index statistics)
           relations:
-            - relation_regex: '.*'
-              schemas:
-                - public
-              relkind:
-                - r  # regular tables
-                - i  # indexes
-                - t  # TOAST tables
-                - p  # partitioned tables
+            - relation_regex: .*
           # Database autodiscovery
           database_autodiscovery:
             enabled: true
@@ -541,11 +541,92 @@ clusterAgent:
             enabled: true
           query_metrics:
             enabled: true
+          # Deep database monitoring settings
+          deep_database_monitoring: true
+          # Collect statement samples
+          collect_statement_samples: true
           # Custom tags
           tags:
             - 'env:staging'
             - 'service:rayne-postgres'
             - 'team:platform'
+
+    # Qdrant Vector Database Monitoring via OpenMetrics
+    # NOTE: File must be named openmetrics.yaml to match the integration name
+    openmetrics.yaml: |-
+      cluster_check: true
+      init_config:
+      instances:
+        - openmetrics_endpoint: http://qdrant-service:6333/metrics
+          namespace: qdrant
+          metrics:
+            # Collection metrics
+            - collections_total
+            - collections_vector_count
+            - collections_point_count
+            # gRPC metrics
+            - grpc_responses_total
+            - grpc_responses_fail_total
+            - grpc_responses_avg_duration_seconds
+            # REST API metrics
+            - rest_responses_total
+            - rest_responses_fail_total
+            - rest_responses_avg_duration_seconds
+            # Memory metrics
+            - memory_active_bytes
+            - memory_allocated_bytes
+            # Cluster metrics (if clustered)
+            - cluster_peers_total
+            - cluster_pending_operations
+          # Collect all available metrics
+          raw_metric_prefix: qdrant_
+          # Send histograms as distributions
+          send_distribution_counts_as_monotonic: true
+          send_distribution_sums_as_monotonic: true
+          # Tags
+          tags:
+            - 'env:staging'
+            - 'service:qdrant'
+            - 'db_type:vector'
+            - 'team:platform'
+
+    # HTTP Health Checks for Qdrant and Ollama
+    # NOTE: File must be named http_check.yaml to match the integration name
+    http_check.yaml: |-
+      cluster_check: true
+      init_config:
+      instances:
+        # Qdrant health checks
+        - name: qdrant_health
+          url: http://qdrant-service:6333/healthz
+          method: GET
+          timeout: 10
+          tags:
+            - 'env:staging'
+            - 'service:qdrant'
+        - name: qdrant_readiness
+          url: http://qdrant-service:6333/readyz
+          method: GET
+          timeout: 10
+          tags:
+            - 'env:staging'
+            - 'service:qdrant'
+        - name: qdrant_collections
+          url: http://qdrant-service:6333/collections
+          method: GET
+          timeout: 10
+          tags:
+            - 'env:staging'
+            - 'service:qdrant'
+        # Ollama health check
+        - name: ollama_health
+          url: http://ollama-service:11434/api/tags
+          method: GET
+          timeout: 15
+          tags:
+            - 'env:staging'
+            - 'service:ollama'
+            - 'model:gemma'
   advancedConfd: {}
   resources: {}
   priorityClassName: ""
@@ -935,6 +1016,7 @@ providers:
 # =============================================================================
 remoteConfiguration:
   enabled: true
+
 
 # =============================================================================
 # Global Settings

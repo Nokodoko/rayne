@@ -6,21 +6,80 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
+// ClaudeAnalysisRequest is the request payload for the Claude agent
+type ClaudeAnalysisRequest struct {
+	MonitorID   int64    `json:"monitorId"`
+	AlertStatus string   `json:"alertStatus"`
+	MonitorName string   `json:"monitorName"`
+	Scope       string   `json:"scope"`
+	Tags        []string `json:"tags,omitempty"`
+}
+
+// ClaudeAnalysisResponse is the response from the Claude agent
+type ClaudeAnalysisResponse struct {
+	Success   bool   `json:"success"`
+	MonitorID int64  `json:"monitorId"`
+	Analysis  string `json:"analysis"`
+	Error     string `json:"error,omitempty"`
+	Timestamp string `json:"timestamp"`
+}
+
 // Processor handles async webhook processing
 type Processor struct {
-	storage      *Storage
-	downtimeSvc  *DowntimeService
+	storage        *Storage
+	downtimeSvc    *DowntimeService
+	claudeAgentURL string
 }
 
 // NewProcessor creates a new webhook processor
 func NewProcessor(storage *Storage, downtimeSvc *DowntimeService) *Processor {
-	return &Processor{
-		storage:      storage,
-		downtimeSvc:  downtimeSvc,
+	claudeURL := os.Getenv("CLAUDE_AGENT_URL")
+	if claudeURL == "" {
+		claudeURL = "http://localhost:9000"
 	}
+	return &Processor{
+		storage:        storage,
+		downtimeSvc:    downtimeSvc,
+		claudeAgentURL: claudeURL,
+	}
+}
+
+// invokeClaudeAgent calls the sidecar Claude agent for RCA analysis
+func (p *Processor) invokeClaudeAgent(event *WebhookEvent) (*ClaudeAnalysisResponse, error) {
+	req := ClaudeAnalysisRequest{
+		MonitorID:   event.Payload.MonitorID,
+		AlertStatus: event.Payload.AlertStatus,
+		MonitorName: event.Payload.MonitorName,
+		Scope:       event.Payload.Scope,
+		Tags:        event.Payload.Tags,
+	}
+
+	jsonBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %v", err)
+	}
+
+	client := &http.Client{Timeout: 120 * time.Second} // Long timeout for AI analysis
+	resp, err := client.Post(p.claudeAgentURL+"/analyze", "application/json", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to call claude agent: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var result ClaudeAnalysisResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %v", err)
+	}
+
+	if result.Error != "" {
+		return nil, fmt.Errorf("claude agent error: %s", result.Error)
+	}
+
+	return &result, nil
 }
 
 // Process handles a webhook event asynchronously
@@ -66,6 +125,25 @@ func (p *Processor) Process(event *WebhookEvent) {
 				log.Printf("Created downtime for monitor %d", event.Payload.MonitorID)
 			}
 		}
+	}
+
+	// Invoke Claude agent for RCA analysis on Alert/Warn status
+	if event.Payload.AlertStatus == "Alert" || event.Payload.AlertStatus == "Warn" {
+		go func() {
+			log.Printf("Invoking Claude agent for RCA analysis on event %d", event.ID)
+			analysis, err := p.invokeClaudeAgent(event)
+			if err != nil {
+				log.Printf("Claude agent failed for event %d: %v", event.ID, err)
+				return
+			}
+			// Truncate analysis for logging
+			analysisPreview := analysis.Analysis
+			if len(analysisPreview) > 200 {
+				analysisPreview = analysisPreview[:200] + "..."
+			}
+			log.Printf("Claude analysis completed for event %d: %s", event.ID, analysisPreview)
+			// TODO: Store analysis in vector DB, create notebook via Datadog API
+		}()
 	}
 
 	// Update event status

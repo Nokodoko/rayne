@@ -38,9 +38,12 @@ fi
 # Start minikube if not running
 if ! minikube status &> /dev/null; then
     echo "Starting minikube..."
-    minikube start --driver=docker --cpus=2 --memory=4096
+    # Increased memory for Ollama + Qdrant + Rayne + PostgreSQL + Datadog Agent
+    minikube start --driver=docker --cpus=4 --memory=12288
 else
     echo "Minikube is already running"
+    echo "Note: For full functionality, ensure minikube has at least 12GB RAM"
+    echo "Restart with: minikube delete && minikube start --cpus=4 --memory=12288"
 fi
 
 # Build the Docker image locally using buildx
@@ -49,10 +52,17 @@ echo "Building Rayne Docker image..."
 cd "$(dirname "$0")/../mkii_ddog_server"
 DOCKER_BUILDKIT=1 docker build -t rayne:latest .
 
-# Load image into minikube (works for both single and multi-node)
+# Build the Claude Agent sidecar image
 echo ""
-echo "Loading image into minikube..."
+echo "Building Claude Agent Docker image..."
+cd "$(dirname "$0")/.."
+DOCKER_BUILDKIT=1 docker build -t claude-agent:latest -f docker/claude-agent/Dockerfile .
+
+# Load images into minikube (works for both single and multi-node)
+echo ""
+echo "Loading images into minikube..."
 minikube image load rayne:latest
+minikube image load claude-agent:latest
 
 export IMAGE_NAME="rayne:latest"
 
@@ -78,6 +88,44 @@ kubectl create secret generic datadog-secrets \
     --from-literal=api-key="$TF_VAR_ecco_dd_api_key" \
     --from-literal=app-key="$TF_VAR_ecco_dd_app_key" \
     --dry-run=client -o yaml | kubectl apply -f -
+
+# Create Anthropic secrets for Claude Agent
+echo ""
+echo "Creating Anthropic secrets..."
+if [ -z "$ANTHROPIC_API_KEY" ]; then
+    echo "Warning: ANTHROPIC_API_KEY not set. Claude Agent will not function."
+    echo "Set it with: export ANTHROPIC_API_KEY=your-key"
+    kubectl create secret generic anthropic-secrets \
+        --from-literal=api-key="placeholder-key" \
+        --dry-run=client -o yaml | kubectl apply -f -
+else
+    kubectl create secret generic anthropic-secrets \
+        --from-literal=api-key="$ANTHROPIC_API_KEY" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    echo "✓ Anthropic API key configured"
+fi
+
+# Apply assets ConfigMap
+echo ""
+echo "Applying assets ConfigMap..."
+kubectl apply -f assets-configmap.yaml
+
+# Deploy Qdrant vector DB
+echo ""
+echo "=== Deploying Qdrant Vector DB ==="
+kubectl apply -f qdrant-deployment.yaml
+echo "Waiting for Qdrant to be ready..."
+kubectl wait --for=condition=ready pod -l app=qdrant --timeout=120s 2>/dev/null || \
+    echo "  Note: Qdrant pod may still be starting..."
+
+# Deploy Ollama for embeddings
+echo ""
+echo "=== Deploying Ollama (Gemma 2B) ==="
+kubectl apply -f ollama-deployment.yaml
+echo "Note: Ollama will download Gemma model on first start (~1.5GB)"
+echo "This may take several minutes..."
+kubectl wait --for=condition=ready pod -l app=ollama --timeout=300s 2>/dev/null || \
+    echo "  Note: Ollama pod may still be downloading the model..."
 
 # Install Datadog Agent FIRST (before Rayne) so the service is available
 echo ""
@@ -235,6 +283,12 @@ echo ""
 echo "Private Locations:"
 echo "  GET  /v1/pl/refresh/{name}      - Refresh private location"
 echo ""
+echo "Claude Agent (Internal Sidecar):"
+echo "  POST /analyze                   - RCA analysis via Claude Code"
+echo "  POST /generate-notebook         - Generate Datadog notebook"
+echo "  GET  /templates                 - List available templates"
+echo "  GET  /health                    - Claude Agent health check"
+echo ""
 echo "=========================================="
 echo ""
 echo "Quick Start:"
@@ -306,6 +360,63 @@ elif kubectl logs -l app=rayne --tail=50 2>&1 | grep -q "lost.*traces"; then
 else
     echo "⚠ APM tracer status unknown - check logs"
 fi
+
+echo ""
+echo "=== Verifying Claude Agent Sidecar ==="
+if kubectl logs -l app=rayne -c claude-agent --tail=10 2>&1 | grep -q "Server listening"; then
+    echo "✓ Claude Agent sidecar is running"
+else
+    echo "⚠ Claude Agent sidecar may not be ready yet"
+    echo "  Check logs: kubectl logs -l app=rayne -c claude-agent"
+fi
+
+echo ""
+echo "=== Verifying Qdrant Vector DB ==="
+if kubectl get pods -l app=qdrant 2>/dev/null | grep -q Running; then
+    echo "✓ Qdrant is running"
+else
+    echo "⚠ Qdrant may not be ready yet"
+fi
+
+echo ""
+echo "=== Verifying Ollama (Embeddings) ==="
+if kubectl get pods -l app=ollama 2>/dev/null | grep -q Running; then
+    echo "✓ Ollama is running"
+    echo "  Note: Gemma model may still be downloading..."
+else
+    echo "⚠ Ollama may not be ready yet"
+fi
+
+echo ""
+echo "=== Cloudflare Tunnel Setup (Persistent Webhook URL) ==="
+echo ""
+TUNNEL_CREDS="$HOME/.cloudflared/2d837cb9-22e8-44c7-a8a4-2316157ec9c9.json"
+if [ -f "$TUNNEL_CREDS" ]; then
+    echo "Found Cloudflare tunnel credentials, setting up persistent webhook URL..."
+    kubectl create secret generic cloudflare-tunnel-credentials \
+        --from-file=credentials.json="$TUNNEL_CREDS" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    kubectl apply -f cloudflare-tunnel.yaml
+    echo ""
+    echo "✓ Cloudflare Tunnel deployed!"
+    echo "  Webhook URL: https://webhooks.n0kos.com/v1/webhooks/receive"
+    echo ""
+    echo "Waiting for tunnel to be ready..."
+    kubectl wait --for=condition=available deployment/cloudflare-tunnel --timeout=60s 2>/dev/null || \
+        echo "  Note: Tunnel may still be starting..."
+else
+    echo "Cloudflare tunnel credentials not found at: $TUNNEL_CREDS"
+    echo ""
+    echo "To set up persistent webhook URL (https://webhooks.n0kos.com):"
+    echo "  1. cloudflared tunnel login"
+    echo "  2. Credentials should exist at: $TUNNEL_CREDS"
+    echo "  3. Re-run this script"
+    echo ""
+    echo "Alternative options for temporary testing:"
+    echo "  - minikube service rayne-service --url"
+    echo "  - kubectl port-forward svc/rayne-service 8080:8080"
+fi
+echo ""
 
 echo ""
 echo "=== Setup Complete ==="

@@ -633,3 +633,368 @@ Should return:
     ...
 }
 ```
+
+---
+
+# Enabling Datadog Log Collection
+
+## Overview
+
+Log collection allows the Datadog Agent to collect logs from containers and send them to Datadog for centralized logging.
+
+## Symptoms Before Fix
+
+The Logs Agent showed `LogsProcessed: 0` even though pods were generating logs. The agent couldn't reach the Kubelet due to TLS verification errors:
+
+```
+impossible to reach Kubelet with host: 192.168.49.2. Please check if your setup requires kubelet_tls_verify = false
+```
+
+## Solution
+
+### Step 1: Enable Logs in Helm Values
+
+In `helm/values.yaml`, set logs configuration:
+
+```yaml
+datadog:
+  logs:
+    enabled: true
+    containerCollectAll: true
+    containerCollectUsingFiles: true
+    autoMultiLineDetection: true
+```
+
+### Step 2: Disable Kubelet TLS Verification (Minikube)
+
+For minikube environments, the Kubelet's TLS certificate may not be properly trusted. Disable verification:
+
+```yaml
+datadog:
+  kubelet:
+    tlsVerify: false
+```
+
+### Step 3: Add Pod Annotations for Log Source
+
+In `k8s/rayne-deployment.yaml`, add annotations for proper log tagging:
+
+```yaml
+metadata:
+  annotations:
+    ad.datadoghq.com/rayne.logs: |
+      [{
+        "source": "go",
+        "service": "rayne",
+        "tags": ["env:staging", "version:1.0.0"]
+      }]
+```
+
+### Step 4: Apply Changes
+
+```bash
+cd /home/n0ko/Portfolio/rayne
+envsubst < helm/values.yaml | helm upgrade datadog-agent datadog/datadog -f -
+kubectl apply -f k8s/rayne-deployment.yaml
+```
+
+## Verification
+
+Check log collection status:
+
+```bash
+# Get agent pod name
+AGENT_POD=$(kubectl get pods -l app=datadog-agent -o jsonpath='{.items[0].metadata.name}')
+
+# Check logs agent status
+kubectl exec $AGENT_POD -c agent -- agent status | grep -A 20 "Logs Agent"
+```
+
+Expected output:
+```
+Logs Agent
+==========
+    LogsProcessed: 21056
+    LogsSent: 21038
+
+  default/rayne-ff48648d5-xxxx/rayne
+  -----------------------------------
+    - Type: file
+      Service: rayne
+      Source: go
+      Status: OK
+```
+
+---
+
+# PostgreSQL Database Monitoring (DBM) Setup
+
+## Overview
+
+Database Monitoring provides deep visibility into PostgreSQL queries, execution plans, and performance metrics.
+
+## Prerequisites
+
+- Datadog Agent with Cluster Checks enabled
+- PostgreSQL 9.6+ (Rayne uses PostgreSQL 16-alpine)
+- `pg_stat_statements` extension loaded via `shared_preload_libraries`
+
+## Step 0: Configure PostgreSQL Server
+
+**CRITICAL**: `pg_stat_statements` must be loaded at server startup via `shared_preload_libraries`. This cannot be done dynamically.
+
+For Kubernetes deployments, add args to the container in `k8s/postgres-deployment.yaml`:
+
+```yaml
+containers:
+  - name: postgres
+    image: postgres:16-alpine
+    args:
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "pg_stat_statements.track=all"
+      - "-c"
+      - "pg_stat_statements.max=10000"
+      - "-c"
+      - "track_activity_query_size=4096"
+      - "-c"
+      - "track_io_timing=on"
+```
+
+**Note**: After adding these args, the PostgreSQL pod must be restarted. If the existing data is incompatible, you may need to delete the PVC and recreate it:
+
+```bash
+kubectl delete deployment postgres
+kubectl delete pvc postgres-pvc
+kubectl delete pv <pv-name>  # Check with: kubectl get pv | grep postgres
+kubectl apply -f k8s/postgres-deployment.yaml
+```
+
+## Step 1: Create Datadog User in PostgreSQL
+
+Connect to PostgreSQL and create the monitoring user:
+
+```bash
+kubectl exec <postgres-pod> -- psql -U rayne -d rayne
+```
+
+Run the following SQL:
+
+```sql
+-- Create user
+CREATE USER datadog WITH PASSWORD 'datadog_dbm_password';
+ALTER ROLE datadog INHERIT;
+GRANT pg_monitor TO datadog;
+
+-- Create schema and grant permissions
+CREATE SCHEMA IF NOT EXISTS datadog;
+GRANT USAGE ON SCHEMA datadog TO datadog;
+GRANT USAGE ON SCHEMA public TO datadog;
+
+-- Enable pg_stat_statements extension
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+```
+
+## Step 2: Create Required Functions
+
+Execute in the `rayne` database:
+
+```sql
+-- Function for activity monitoring
+CREATE OR REPLACE FUNCTION datadog.pg_stat_activity()
+RETURNS SETOF pg_stat_activity AS
+$$ SELECT * FROM pg_catalog.pg_stat_activity; $$
+LANGUAGE sql SECURITY DEFINER;
+
+-- Function for statement statistics
+CREATE OR REPLACE FUNCTION datadog.pg_stat_statements()
+RETURNS SETOF pg_stat_statements AS
+$$ SELECT * FROM pg_stat_statements; $$
+LANGUAGE sql SECURITY DEFINER;
+
+-- Function for explain plans
+CREATE OR REPLACE FUNCTION datadog.explain_statement(
+   l_query TEXT, OUT explain JSON)
+RETURNS SETOF JSON AS
+$$
+DECLARE
+  curs REFCURSOR;
+  plan JSON;
+BEGIN
+   OPEN curs FOR EXECUTE pg_catalog.concat('EXPLAIN (FORMAT JSON) ', l_query);
+   FETCH curs INTO plan;
+   CLOSE curs;
+   RETURN QUERY SELECT plan;
+END;
+$$
+LANGUAGE 'plpgsql' RETURNS NULL ON NULL INPUT SECURITY DEFINER;
+```
+
+## Step 3: Configure Helm Values
+
+Add PostgreSQL cluster check in `helm/values.yaml` under `clusterAgent.confd`:
+
+```yaml
+clusterAgent:
+  confd:
+    postgres.yaml: |-
+      cluster_check: true
+      init_config:
+      instances:
+        - dbm: true
+          host: postgres-service
+          port: 5432
+          username: datadog
+          password: 'datadog_dbm_password'
+          # Query metrics collection
+          collect_activity_metrics: true
+          collect_database_size_metrics: true
+          collect_default_database: true
+          # Function and bloat metrics
+          collect_function_metrics: true
+          collect_bloat_metrics: true
+          # WAL metrics (disabled - requires data_directory access)
+          collect_wal_metrics: false
+          # Count metrics
+          collect_count_metrics: true
+          # Schema collection
+          collect_schemas:
+            enabled: true
+          # Relation metrics (all tables/indexes)
+          relations:
+            - relation_regex: .*
+          # Deep database monitoring
+          deep_database_monitoring: true
+          collect_statement_samples: true
+          # Database autodiscovery
+          database_autodiscovery:
+            enabled: true
+            include:
+              - '.*'
+          # Query samples and explain plans
+          query_samples:
+            enabled: true
+          query_metrics:
+            enabled: true
+          # Custom tags
+          tags:
+            - 'env:staging'
+            - 'service:rayne-postgres'
+            - 'team:platform'
+```
+
+Enable cluster checks runner:
+
+```yaml
+clusterChecksRunner:
+  enabled: true
+```
+
+## Step 4: Apply Changes
+
+```bash
+cd /home/n0ko/Portfolio/rayne
+envsubst < helm/values.yaml | helm upgrade datadog-agent datadog/datadog -f -
+```
+
+## Configuration Notes
+
+### Important: database_autodiscovery vs dbname
+
+- Do NOT set `dbname` when `database_autodiscovery` is enabled
+- The autodiscovery will find all databases matching the `include` pattern
+
+### WAL Metrics Disabled
+
+`collect_wal_metrics` requires `data_directory` to be set, which needs direct filesystem access to PostgreSQL data files. In Kubernetes, this is typically not available from the agent, so it's disabled.
+
+## Verification
+
+### Check Cluster Checks Dispatch
+
+```bash
+# Check cluster agent logs for postgres dispatch
+kubectl logs -l app=datadog-agent-cluster-agent -c cluster-agent | grep "postgres"
+```
+
+Expected output:
+```
+Dispatching configuration postgres:xxx to node datadog-agent-clusterchecks-xxx
+```
+
+### Check Postgres Check Status
+
+```bash
+# Find which runner got the check
+kubectl logs -l app=datadog-agent-cluster-agent -c cluster-agent | grep "Dispatching configuration postgres"
+
+# Check that runner's status
+kubectl exec <clusterchecks-pod> -- agent status | grep -A 30 "postgres"
+```
+
+Expected output:
+```
+postgres (19.1.0)
+-----------------
+  Instance ID: postgres:xxx [OK]
+  Total Runs: 4
+  Metric Samples: Last Run: 894, Total: 3,474
+  Database Monitoring Activity Samples: Last Run: 2, Total: 5
+  Database Monitoring Query Samples: Last Run: 4, Total: 14
+```
+
+### View in Datadog
+
+- **Database List**: https://app.datadoghq.com/databases
+- **Query Metrics**: Database > Postgres > Query Metrics
+- **Query Samples**: Database > Postgres > Query Samples
+
+## Metric Types Collected
+
+| Metric Type | Description |
+|-------------|-------------|
+| `collect_activity_metrics` | Active connections, queries, locks |
+| `collect_database_size_metrics` | Database and table sizes |
+| `collect_function_metrics` | Function execution stats |
+| `collect_bloat_metrics` | Table and index bloat estimation |
+| `collect_count_metrics` | Row counts for relations |
+| `relations` | Per-table metrics (seq_scan, idx_scan, etc.) |
+| `query_samples` | Individual query execution samples |
+| `query_metrics` | Aggregated query performance stats |
+
+## Troubleshooting
+
+### Check Initialization Errors
+
+If the check shows `[ERROR]`:
+
+```bash
+kubectl exec <clusterchecks-pod> -- agent status | grep -A 50 "Check Initialization Errors"
+```
+
+Common errors:
+- `'dbname' parameter should not be set when database_autodiscovery is enabled`
+- `Field 'data_directory' is required when 'collect_wal_metrics' is enabled`
+
+### Verify PostgreSQL Connectivity
+
+```bash
+kubectl exec <clusterchecks-pod> -- agent check postgres
+```
+
+### Test User Permissions
+
+```bash
+kubectl exec <postgres-pod> -- psql -U datadog -d rayne -c "SELECT * FROM pg_stat_database LIMIT 1;"
+kubectl exec <postgres-pod> -- psql -U datadog -d rayne -c "SELECT * FROM datadog.pg_stat_activity() LIMIT 1;"
+kubectl exec <postgres-pod> -- psql -U datadog -d rayne -c "SELECT * FROM datadog.pg_stat_statements() LIMIT 1;"
+```
+
+---
+
+## References
+
+- [Datadog PostgreSQL DBM Setup](https://docs.datadoghq.com/database_monitoring/setup_postgres/selfhosted/)
+- [Datadog Kubernetes Log Collection](https://docs.datadoghq.com/containers/kubernetes/log/)
+- [Datadog PostgreSQL Integration](https://docs.datadoghq.com/integrations/postgres/)

@@ -26,8 +26,26 @@ spec:
             "service": "rayne",
             "tags": ["env:staging", "version:1.0.0"]
           }]
+        ad.datadoghq.com/claude-agent.logs: |
+          [{
+            "source": "nodejs",
+            "service": "claude-agent",
+            "tags": ["env:staging", "version:1.0.0"]
+          }]
     spec:
+      # Init container to copy credentials to writable volume
+      initContainers:
+        - name: init-claude-credentials
+          image: busybox:1.36
+          command: ['sh', '-c', 'cp /credentials/.credentials.json /claude-home/.credentials.json && chown -R 1000:1000 /claude-home']
+          volumeMounts:
+            - name: claude-credentials-secret
+              mountPath: /credentials
+              readOnly: true
+            - name: claude-home
+              mountPath: /claude-home
       containers:
+        # Main Rayne Go API container
         - name: rayne
           image: rayne:latest
           imagePullPolicy: Never  # For minikube local images
@@ -72,6 +90,9 @@ spec:
               value: "staging"
             - name: DD_VERSION
               value: "1.0.0"
+            # Claude Agent sidecar URL
+            - name: CLAUDE_AGENT_URL
+              value: "http://localhost:9000"
           resources:
             requests:
               memory: "64Mi"
@@ -95,6 +116,82 @@ spec:
             periodSeconds: 20
             timeoutSeconds: 3
             failureThreshold: 3
+
+        # Claude Agent sidecar - Claude Code CLI + Python dd_lib
+        - name: claude-agent
+          image: claude-agent:latest
+          imagePullPolicy: Never  # For minikube local images
+          ports:
+            - containerPort: 9000
+              name: agent
+          env:
+            # Using account-based auth via mounted credentials instead of API key
+            - name: DD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: datadog-secrets
+                  key: api-key
+            - name: DD_APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: datadog-secrets
+                  key: app-key
+            # Vector DB connection for RCA storage
+            - name: QDRANT_URL
+              value: "http://qdrant-service:6333"
+            # Ollama for embeddings
+            - name: OLLAMA_URL
+              value: "http://ollama-service:11434"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"
+          volumeMounts:
+            - name: assets-volume
+              mountPath: /app/assets
+              readOnly: true
+            - name: work-volume
+              mountPath: /app/work
+            - name: claude-home
+              mountPath: /home/node/.claude
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+      volumes:
+        # Assets templates ConfigMap
+        - name: assets-volume
+          configMap:
+            name: rayne-assets
+        # Shared workspace for Claude operations
+        - name: work-volume
+          emptyDir: {}
+        # Claude credentials secret (source for init container)
+        - name: claude-credentials-secret
+          secret:
+            secretName: claude-credentials
+            items:
+              - key: credentials.json
+                path: .credentials.json
+        # Writable Claude home directory
+        - name: claude-home
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

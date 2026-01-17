@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qdrant
+  labels:
+    app: qdrant
+    tags.datadoghq.com/env: "staging"
+    tags.datadoghq.com/service: "qdrant"
+    tags.datadoghq.com/version: "1.0.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qdrant
+  template:
+    metadata:
+      labels:
+        app: qdrant
+        tags.datadoghq.com/env: "staging"
+        tags.datadoghq.com/service: "qdrant"
+        tags.datadoghq.com/version: "1.0.0"
+      annotations:
+        # Datadog Log Collection
+        ad.datadoghq.com/qdrant.logs: |
+          [{
+            "source": "qdrant",
+            "service": "qdrant",
+            "tags": ["env:staging", "db_type:vector"]
+          }]
+        # Datadog OpenMetrics autodiscovery
+        ad.datadoghq.com/qdrant.checks: |
+          {
+            "openmetrics": {
+              "init_config": {},
+              "instances": [
+                {
+                  "openmetrics_endpoint": "http://%%host%%:6333/metrics",
+                  "namespace": "qdrant",
+                  "metrics": [
+                    "collections_total",
+                    "collections_vector_count",
+                    "collections_point_count",
+                    "grpc_responses_total",
+                    "grpc_responses_fail_total",
+                    "rest_responses_total",
+                    "rest_responses_fail_total",
+                    "memory_active_bytes",
+                    "memory_allocated_bytes"
+                  ],
+                  "tags": ["env:staging", "service:qdrant", "db_type:vector"]
+                }
+              ]
+            }
+          }
+    spec:
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:latest
+          ports:
+            - containerPort: 6333
+              name: http
+            - containerPort: 6334
+              name: grpc
+          env:
+            - name: QDRANT__SERVICE__GRPC_PORT
+              value: "6334"
+            # Enable telemetry/metrics
+            - name: QDRANT__TELEMETRY__DISABLED
+              value: "false"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          volumeMounts:
+            - name: qdrant-storage
+              mountPath: /qdrant/storage
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 6333
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 6333
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      volumes:
+        - name: qdrant-storage
+          persistentVolumeClaim:
+            claimName: qdrant-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qdrant-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant-service
+  labels:
+    app: qdrant
+    tags.datadoghq.com/env: "staging"
+    tags.datadoghq.com/service: "qdrant"
+spec:
+  selector:
+    app: qdrant
+  ports:
+    - protocol: TCP
+      port: 6333
+      targetPort: 6333
+      name: http
+    - protocol: TCP
+      port: 6334
+      targetPort: 6334
+      name: grpc
+  type: ClusterIP

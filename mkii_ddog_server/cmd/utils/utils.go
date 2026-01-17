@@ -13,6 +13,12 @@ func Endpoint(router *http.ServeMux, method string, path string, endpt func(w ht
 	router.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		status, resp := endpt(w, r)
+
+		// Log errors (APM error tagging is handled by traceMiddleware in api.go)
+		if status >= 400 {
+			log.Printf("[ERROR] %s %s returned status %d", r.Method, r.URL.Path, status)
+		}
+
 		if resp != nil {
 			w.WriteHeader(status)
 			json.NewEncoder(w).Encode(resp)
@@ -29,6 +35,12 @@ func EndpointWithPathParams(router *http.ServeMux, method string, path string, v
 		w.Header().Set("Content-Type", "application/json")
 		pathValue := r.PathValue(val)
 		status, resp := endpt(w, r, pathValue)
+
+		// Log errors (APM error tagging is handled by traceMiddleware in api.go)
+		if status >= 400 {
+			log.Printf("[ERROR] %s %s returned status %d", r.Method, r.URL.Path, status)
+		}
+
 		if resp != nil {
 			w.WriteHeader(status)
 			json.NewEncoder(w).Encode(resp)

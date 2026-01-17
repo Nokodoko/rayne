@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -17,8 +18,56 @@ import (
 	"github.com/Nokodoko/mkii_ddog_server/services/rum"
 	"github.com/Nokodoko/mkii_ddog_server/services/user"
 	"github.com/Nokodoko/mkii_ddog_server/services/webhooks"
-	httptrace "gopkg.in/DataDog/dd-trace-go.v1/contrib/net/http"
+	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/ext"
+	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
+
+// statusRecorder wraps http.ResponseWriter to capture the status code
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// traceMiddleware creates APM spans for all requests and properly tags errors
+func traceMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Start a new span for this request
+		span, ctx := tracer.StartSpanFromContext(r.Context(), "http.request",
+			tracer.ServiceName("rayne"),
+			tracer.ResourceName(r.Method+" "+r.URL.Path),
+			tracer.Tag(ext.SpanType, ext.SpanTypeWeb),
+			tracer.Tag(ext.HTTPMethod, r.Method),
+			tracer.Tag(ext.HTTPURL, r.URL.Path),
+		)
+		defer span.Finish()
+
+		// Wrap the response writer to capture status code
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		// Call the next handler with the span in context
+		next.ServeHTTP(rec, r.WithContext(ctx))
+
+		// Tag the span with the response status
+		span.SetTag(ext.HTTPCode, rec.status)
+
+		// Mark as error if status >= 400
+		if rec.status >= 400 {
+			span.SetTag(ext.Error, true)
+			span.SetTag("error.message", fmt.Sprintf("%d: %s", rec.status, http.StatusText(rec.status)))
+			if rec.status >= 500 {
+				span.SetTag("error.type", "server_error")
+			} else {
+				span.SetTag("error.type", "client_error")
+			}
+			log.Printf("[APM] Error span tagged: %s %s -> %d", r.Method, r.URL.Path, rec.status)
+		}
+	})
+}
 
 type DDogServer struct {
 	addr string
@@ -151,14 +200,9 @@ func (d *DDogServer) Run() error {
 		  POST /v1/demo/seed/all
 	`, d.addr)
 
-	// Wrap router with Datadog APM tracing middleware
-	// Mark 4xx and 5xx responses as errors for APM visibility
-	tracedRouter := httptrace.WrapHandler(router, "rayne", "/",
-		httptrace.WithSpanOptions(),
-		httptrace.WithStatusCheck(func(statusCode int) bool {
-			return statusCode >= 400
-		}),
-	)
+	// Wrap router with custom tracing middleware that properly propagates spans
+	// and tags errors for APM visibility
+	tracedRouter := traceMiddleware(router)
 
 	return http.ListenAndServe(d.addr, tracedRouter)
 }

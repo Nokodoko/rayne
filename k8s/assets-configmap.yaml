@@ -1,0 +1,103 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rayne-assets
+data:
+  incident-report-cloned.md: |
+    ---
+    title: Incident Report (cloned)
+    modified: 2025-12-02T15:46:46.075Z
+    tags: []
+    metadata:
+      type: Report
+    time:
+      live_span: 1h
+    template_variables: []
+    ---
+
+
+    # Summary
+
+    A total of \_\_\_ incidents were declared in this reporting period dating \[Month Day, 202x to Month Day, 202x\]. Of these incidents, \_\_\_ had customer impact with a mean impact duration of \_\_\_. The most common severity of incident during this period was \_\_\_, incidents of this severity are defined as incidents that \_\_\_. The end of this section visualizes of the number of incidents per week as well as the mean customer impact duration, each broken down by the severity of the incident.
+
+    # Outage Tracking
+
+    During this reporting period, \_\_\_ incidents were classified as an outage (a SEV-1 or SEV-2 incident). SEV-1 incidents are defined as \_\_\_, while SEV-2 incidents are defined as \_\_\_. Over the course of this reporting period, the portion of incidents considered to be outages has trended \[downward/upward\] reaching a weekly \[minimum/maximum\] percentage of \_\_\_. The mean customer impact of these outages was \_\_\_, reaching a weekly maximum value of \_\_\_.
+
+    Analyzing these outages reveals the following patterns:
+
+    1.
+
+    2.
+
+    To reduce the number of outages, it is recommended that the following steps are taken:
+
+    1.
+
+    2.
+
+    # Response Breakdown
+
+    Incidents were mostly commonly detected by \_\_\_. For all incidents during this period, the Mean Time to Repair was \_\_\_ and the Mean Time to Resolve was \_\_\_. Time to Repair is defined as the time between the creation of the incident and the end of the customer impact, while Time to Resolve is defined as the time between creation of the incident and the time the incident was resolved. Over the course of this reporting period Mean Time to Repair trended \[downward/upward\] with a weekly \[minimum/maximum\] value of \_\_\_, while Mean Time to Resolve trended \[downward/upward\] with a weekly \[minimum/maximum\] value of \_\_\_.
+
+    Investigating the response characteristics further, it is recommended that the following action items are prioritized to improve the response process:
+
+    1.
+
+    2.
+
+    # Organizational & Service Breakdown
+
+    During this reporting period, team \_\_\_ responded to the most incidents, while team \_\_\_ responded to incidents with the largest mean customer impact. Upon reviewing with these teams, they reported facing the following challenges:
+
+    1.
+
+    2.
+
+    It is recommended that more resources are allocated to team(s) \_\_\_ to ensure they receive adequate support in meeting reliability goals. The proposed changes would include:
+
+    1.
+
+    2.
+
+    Comparatively, service \_\_\_ experienced the most incidents, while service \_\_\_ experienced incidents with the largest mean customer impact. Additional review of these services reveals the following action items that should be taken to prevent future incidents involving these services:
+
+    1.
+
+    2.
+
+  logs-analysis.md: |
+    ---
+    title: Logs Analysis
+    modified: 2026-01-13T14:12:55.873Z
+    tags: []
+    metadata: {}
+    time:
+      live_span: 1h
+    template_variables: []
+    ---
+
+
+    Notebooks now include advanced analysis features. You can use SQL, chain queries, and visualize results in notebooks or dashboards.
+
+    If you've used **"Log Workspaces"** in Datadog Log Management product, notebooks now has the same features.
+
+    # Defining data source cells
+
+    With analysis features, you can define a data source cell with query configurations for logs data including timestamp, host, service, and message columns.
+
+    Try it by typing `/datasource` in your notebook, or by clicking any of the data source buttons in the menus.
+
+    # Chaining queries, using SQL and transformation cells
+
+    Then query it using SQL (SELECT * FROM datasource_1) and/or apply pre-defined transformations like join, parsing or filters.
+
+    # Visualization and saving to dashboards
+
+    Lastly visualize it using toplist, timeseries, or table widgets and save to a dashboard.
+
+  prompt.md: |
+    https://chatgpt.com/share/692f0d31-422c-8005-bacf-b3f9cf134e81
+    -- modify the chat and use as a prompt injection to create incident reports
+    include all crud features
+    length of time post creation to remove if no activity

@@ -1,0 +1,76 @@
+# Cloudflare Named Tunnel - Persistent URL for webhooks
+# Exposes rayne-service at https://webhooks.n0kos.com
+#
+# Setup:
+#   1. Create secret from credentials file:
+#      kubectl create secret generic cloudflare-tunnel-credentials \
+#        --from-file=credentials.json=$HOME/.cloudflared/2d837cb9-22e8-44c7-a8a4-2316157ec9c9.json
+#
+#   2. Apply this manifest:
+#      kubectl apply -f cloudflare-tunnel.yaml
+#
+# Webhook URL: https://webhooks.n0kos.com/v1/webhooks/receive
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflare-tunnel-config
+data:
+  config.yaml: |
+    tunnel: 2d837cb9-22e8-44c7-a8a4-2316157ec9c9
+    credentials-file: /etc/cloudflared/credentials.json
+    no-autoupdate: true
+    ingress:
+      - hostname: webhooks.n0kos.com
+        service: http://rayne-service:8080
+      - service: http_status:404
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflare-tunnel
+  labels:
+    app: cloudflare-tunnel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflare-tunnel
+  template:
+    metadata:
+      labels:
+        app: cloudflare-tunnel
+    spec:
+      containers:
+      - name: cloudflared
+        image: cloudflare/cloudflared:latest
+        args:
+          - tunnel
+          - --config
+          - /etc/cloudflared/config.yaml
+          - run
+        volumeMounts:
+        - name: config
+          mountPath: /etc/cloudflared/config.yaml
+          subPath: config.yaml
+          readOnly: true
+        - name: credentials
+          mountPath: /etc/cloudflared/credentials.json
+          subPath: credentials.json
+          readOnly: true
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      volumes:
+      - name: config
+        configMap:
+          name: cloudflare-tunnel-config
+      - name: credentials
+        secret:
+          secretName: cloudflare-tunnel-credentials
