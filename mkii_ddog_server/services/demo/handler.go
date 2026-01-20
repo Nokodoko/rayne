@@ -205,6 +205,79 @@ func (h *Handler) GetDemoStatus(w http.ResponseWriter, r *http.Request) (int, an
 	}
 }
 
+// GenerateError returns intentional HTTP errors for testing
+// Query params:
+//   - code: HTTP status code (400-599, default: 500)
+//   - message: Custom error message
+//   - type: Error type (server, timeout, database, upstream, random)
+func (h *Handler) GenerateError(w http.ResponseWriter, r *http.Request) (int, any) {
+	code := 500
+	if c := r.URL.Query().Get("code"); c != "" {
+		if parsed, err := strconv.Atoi(c); err == nil && parsed >= 400 && parsed < 600 {
+			code = parsed
+		}
+	}
+
+	errorType := r.URL.Query().Get("type")
+	if errorType == "" {
+		errorType = "server"
+	}
+
+	// Handle random error type
+	if errorType == "random" {
+		errorTypes := []string{"server", "timeout", "database", "upstream", "validation"}
+		errorType = errorTypes[code%len(errorTypes)]
+		codes := []int{400, 401, 403, 404, 500, 502, 503, 504}
+		code = codes[code%len(codes)]
+	}
+
+	customMessage := r.URL.Query().Get("message")
+
+	var errorMsg string
+	switch errorType {
+	case "timeout":
+		code = 504
+		errorMsg = "Gateway timeout: upstream service did not respond in time"
+	case "database":
+		code = 500
+		errorMsg = "Database connection failed: connection refused to postgres:5432"
+	case "upstream":
+		code = 502
+		errorMsg = "Bad gateway: upstream service returned invalid response"
+	case "validation":
+		code = 400
+		errorMsg = "Validation failed: required field 'id' is missing"
+	case "auth":
+		code = 401
+		errorMsg = "Authentication required: invalid or expired token"
+	case "forbidden":
+		code = 403
+		errorMsg = "Access denied: insufficient permissions for this resource"
+	case "notfound":
+		code = 404
+		errorMsg = "Resource not found: the requested item does not exist"
+	case "ratelimit":
+		code = 429
+		errorMsg = "Rate limit exceeded: too many requests, please retry later"
+	case "unavailable":
+		code = 503
+		errorMsg = "Service unavailable: server is currently overloaded"
+	default: // "server"
+		errorMsg = "Internal server error: an unexpected error occurred"
+	}
+
+	if customMessage != "" {
+		errorMsg = customMessage
+	}
+
+	return code, map[string]interface{}{
+		"error":      errorMsg,
+		"error_type": errorType,
+		"status":     code,
+		"demo":       true,
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

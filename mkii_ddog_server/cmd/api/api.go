@@ -18,6 +18,7 @@ import (
 	"github.com/Nokodoko/mkii_ddog_server/services/rum"
 	"github.com/Nokodoko/mkii_ddog_server/services/user"
 	"github.com/Nokodoko/mkii_ddog_server/services/webhooks"
+	"github.com/Nokodoko/mkii_ddog_server/services/webhooks/processors"
 	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/ext"
 	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
@@ -89,9 +90,15 @@ func (d *DDogServer) Run() error {
 	webhookStorage := webhooks.NewStorage(d.db)
 	rumStorage := rum.NewStorage(d.db)
 
-	// Initialize webhook services
-	downtimeSvc := webhooks.NewDowntimeService()
-	webhookProcessor := webhooks.NewProcessor(webhookStorage, downtimeSvc)
+	// Initialize webhook processor with registered processors
+	// Add or remove processors here to customize webhook handling
+	webhookProcessor := webhooks.NewProcessor(webhookStorage,
+		processors.NewDesktopNotifyProcessor(), // Desktop notifications
+		processors.NewForwardingProcessor(),    // Forward to configured URLs
+		processors.NewDowntimeProcessor(),      // Auto-create downtimes on recovery
+		processors.NewClaudeAgentProcessor(),   // AI-powered RCA analysis
+		// processors.NewSlackProcessor(),      // Uncomment to enable Slack (set SLACK_WEBHOOK_URL)
+	)
 
 	// Initialize handlers
 	userHandler := user.NewHandler(userStorage)
@@ -143,6 +150,7 @@ func (d *DDogServer) Run() error {
 	utils.Endpoint(router, "GET", "/v1/webhooks/config", webhookHandler.GetWebhookConfigs)
 	utils.Endpoint(router, "GET", "/v1/webhooks/stats", webhookHandler.GetWebhookStats)
 	utils.Endpoint(router, "POST", "/v1/webhooks/reprocess", webhookHandler.ReprocessPending)
+	utils.Endpoint(router, "GET", "/v1/webhooks/processors", webhookHandler.ListProcessors)
 
 	// RUM (Real User Monitoring)
 	utils.Endpoint(router, "POST", "/v1/rum/init", rumHandler.InitVisitor)
@@ -160,6 +168,7 @@ func (d *DDogServer) Run() error {
 	utils.Endpoint(router, "POST", "/v1/demo/seed/all", demoHandler.SeedAllData)
 	utils.Endpoint(router, "GET", "/v1/demo/monitors", demoHandler.GenerateSampleMonitors)
 	utils.Endpoint(router, "GET", "/v1/demo/status", demoHandler.GetDemoStatus)
+	utils.Endpoint(router, "GET", "/v1/demo/error", demoHandler.GenerateError)
 
 	// Monitors
 	utils.Endpoint(router, "GET", "/v1/monitors", monitors.ListMonitors)

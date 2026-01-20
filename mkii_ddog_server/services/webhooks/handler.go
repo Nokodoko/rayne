@@ -29,19 +29,28 @@ func NewHandler(storage *Storage, processor *Processor) *Handler {
 
 // sendDesktopNotification sends a notification to the local notify-server
 // The server URL is configured via NOTIFY_SERVER_URL env var (default: http://host.minikube.internal:9999)
-func sendDesktopNotification(title, message string) {
+func sendDesktopNotification(payload WebhookPayload) {
 	serverURL := os.Getenv("NOTIFY_SERVER_URL")
 	if serverURL == "" {
 		serverURL = "http://host.minikube.internal:9999"
 	}
 
-	payload := map[string]string{
-		"title":   title,
-		"message": message,
-		"urgency": "critical",
+	// Forward the full custom payload fields to the notify server
+	notifyPayload := map[string]string{
+		"ALERT_STATE":         payload.AlertState,
+		"ALERT_TITLE":         payload.AlertTitleCustom,
+		"APPLICATION_LONGNAME": payload.ApplicationLongname,
+		"APPLICATION_TEAM":    payload.ApplicationTeam,
+		"DETAILED_DESCRIPTION": payload.DetailedDescription,
+		"IMPACT":              payload.Impact,
+		"METRIC":              payload.Metric,
+		"SUPPORT_GROUP":       payload.SupportGroup,
+		"THRESHOLD":           payload.Threshold,
+		"VALUE":               payload.Value,
+		"URGENCY":             payload.Urgency,
 	}
 
-	jsonData, err := json.Marshal(payload)
+	jsonData, err := json.Marshal(notifyPayload)
 	if err != nil {
 		log.Printf("[WEBHOOK] Failed to marshal notification payload: %v", err)
 		return
@@ -56,7 +65,7 @@ func sendDesktopNotification(title, message string) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		log.Printf("[WEBHOOK] Desktop notification sent: %s", title)
+		log.Printf("[WEBHOOK] Desktop notification sent: %s", payload.AlertTitleCustom)
 	} else {
 		log.Printf("[WEBHOOK] Notification server returned status %d", resp.StatusCode)
 	}
@@ -82,16 +91,8 @@ func (h *Handler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) (int, a
 	log.Printf("[WEBHOOK] Stored event ID: %d, Monitor: %s (%d), Status: %s",
 		event.ID, payload.MonitorName, payload.MonitorID, payload.AlertStatus)
 
-	// Send desktop notification
-	notifyTitle := payload.MonitorName
-	if notifyTitle == "" {
-		notifyTitle = "Datadog Webhook"
-	}
-	notifyMsg := payload.AlertStatus
-	if payload.AlertMessage != "" {
-		notifyMsg = payload.AlertMessage
-	}
-	go sendDesktopNotification(notifyTitle, notifyMsg)
+	// Send desktop notification with full payload
+	go sendDesktopNotification(payload)
 
 	// Process asynchronously
 	go h.processor.Process(event)
@@ -239,4 +240,13 @@ func (h *Handler) ReprocessPending(w http.ResponseWriter, r *http.Request) (int,
 	}
 
 	return http.StatusOK, map[string]string{"status": "reprocessing started"}
+}
+
+// ListProcessors returns the list of registered webhook processors
+func (h *Handler) ListProcessors(w http.ResponseWriter, r *http.Request) (int, any) {
+	processors := h.processor.ListProcessors()
+	return http.StatusOK, map[string]interface{}{
+		"processors": processors,
+		"count":      len(processors),
+	}
 }

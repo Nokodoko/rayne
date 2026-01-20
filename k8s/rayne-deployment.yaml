@@ -33,7 +33,7 @@ spec:
             "tags": ["env:staging", "version:1.0.0"]
           }]
     spec:
-      # Init container to copy credentials to writable volume
+      # Init containers to copy credentials and dd_lib to writable volumes
       initContainers:
         - name: init-claude-credentials
           image: busybox:1.36
@@ -44,6 +44,15 @@ spec:
               readOnly: true
             - name: claude-home
               mountPath: /claude-home
+        - name: init-dd-lib
+          image: busybox:1.36
+          command: ['sh', '-c', 'cp -r /dd-lib-source/* /dd-lib/ 2>/dev/null || echo "dd_lib ConfigMap not found, using empty dir" && chown -R 1000:1000 /dd-lib']
+          volumeMounts:
+            - name: dd-lib-source
+              mountPath: /dd-lib-source
+              readOnly: true
+            - name: dd-lib-volume
+              mountPath: /dd-lib
       containers:
         # Main Rayne Go API container
         - name: rayne
@@ -157,6 +166,8 @@ spec:
               mountPath: /app/work
             - name: claude-home
               mountPath: /home/node/.claude
+            - name: dd-lib-volume
+              mountPath: /app/dd_lib
           readinessProbe:
             httpGet:
               path: /health
@@ -191,6 +202,14 @@ spec:
                 path: .credentials.json
         # Writable Claude home directory
         - name: claude-home
+          emptyDir: {}
+        # Source dd_lib from ConfigMap (read-only)
+        - name: dd-lib-source
+          configMap:
+            name: dd-lib-configmap
+            optional: true
+        # Writable dd_lib directory for auto-generated functions
+        - name: dd-lib-volume
           emptyDir: {}
 ---
 apiVersion: v1

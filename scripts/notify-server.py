@@ -2,19 +2,65 @@
 """
 Local notification server that receives webhooks from Rayne (in K8s)
 and sends desktop notifications via notify-send.
-
-Usage:
-    ./notify-server.py [port]
-
-Default port: 9999
 """
 
+import argparse
 import subprocess
-import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 9999
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        prog='notify-server',
+        description='Local notification server that receives webhooks from Rayne and sends desktop notifications via notify-send.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    %(prog)s                  Start server on default port 9999
+    %(prog)s -p 8080          Start server on port 8080
+    %(prog)s --bind 127.0.0.1 Bind to localhost only
+
+Endpoints:
+    POST /    Receive webhook payload and send desktop notification
+    GET  /    Health check endpoint
+
+Webhook Payload (Datadog webhook format):
+    {
+        "ALERT_STATE": "$ALERT_TRANSITION",
+        "ALERT_TITLE": "$ALERT_TITLE",
+        "APPLICATION_LONGNAME": "$TAGS[longname]",
+        "APPLICATION_TEAM": "$TAGS[application_team]",
+        "DETAILED_DESCRIPTION": "$EVENT_MSG",
+        "IMPACT": "3-Moderate/Limited",
+        "METRIC": "$ALERT_STATUS",
+        "SUPPORT_GROUP": "$TAGS[support_group]",
+        "THRESHOLD": "$THRESHOLD",
+        "VALUE": "$VALUE",
+        "URGENCY": "$ALERT_PRIORITY"
+    }
+
+Note: Requires 'notify-send' to be installed (libnotify-bin on Debian/Ubuntu).
+"""
+    )
+    parser.add_argument(
+        '-p', '--port',
+        type=int,
+        default=9999,
+        help='Port to listen on (default: 9999)'
+    )
+    parser.add_argument(
+        '-b', '--bind',
+        type=str,
+        default='0.0.0.0',
+        help='Address to bind to (default: 0.0.0.0)'
+    )
+    return parser.parse_args()
+
+
+args = parse_args()
+PORT = args.port
+BIND = args.bind
 
 class NotifyHandler(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -26,26 +72,37 @@ class NotifyHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             data = {}
 
-        # Extract notification details
+        # Extract notification details - simple format from Rayne
         title = data.get('title', 'Datadog Webhook')
-        message = data.get('message', data.get('alert_status', 'No message'))
+        message = data.get('message', '')
         urgency = data.get('urgency', 'critical')
+
+        # Validate urgency
+        if urgency not in ('critical', 'normal', 'low'):
+            urgency = 'critical'
+
+        notification_body = message if message else title
 
         # Log received webhook
         print(f"\n{'='*50}")
         print(f"[WEBHOOK] Received:")
         print(json.dumps(data, indent=2))
 
-        # Send desktop notification
+        # Send desktop notification with dunst hints for orange border
+        # Requires dunst config rule for appname=Rayne with frame_color=#ff8c00
         try:
             subprocess.run([
                 'notify-send',
                 '-u', urgency,
                 '-a', 'Rayne',
+                '-h', 'string:x-dunst-stack-tag:rayne',
+                '-h', 'string:fgcolor:#ffffff',
+                '-h', 'string:bgcolor:#1a1a1a',
+                '-h', 'string:frcolor:#ff8c00',
                 title,
-                message
+                notification_body
             ], check=True)
-            print(f"[NOTIFY] Sent: {title} - {message}")
+            print(f"[NOTIFY] Sent: {title} (orange border)")
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -90,18 +147,20 @@ class NotifyHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = HTTPServer(('0.0.0.0', PORT), NotifyHandler)
+    server = HTTPServer((BIND, PORT), NotifyHandler)
     print(f"""
 ╔══════════════════════════════════════════════════════╗
 ║          Rayne Notification Server                   ║
 ╠══════════════════════════════════════════════════════╣
-║  Listening on: http://0.0.0.0:{PORT:<5}                 ║
+║  Listening on: http://{BIND}:{PORT:<5}                 ║
 ║                                                      ║
 ║  From Kubernetes, Rayne can reach this at:           ║
 ║    http://host.minikube.internal:{PORT:<5}              ║
 ║                                                      ║
 ║  POST /  - Receive webhook, send notification        ║
 ║  GET  /  - Health check                              ║
+║                                                      ║
+║  Run with -h or --help for usage information         ║
 ╚══════════════════════════════════════════════════════╝
     """)
 

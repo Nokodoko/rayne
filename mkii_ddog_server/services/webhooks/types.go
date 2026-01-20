@@ -2,8 +2,36 @@ package webhooks
 
 import "time"
 
+// WebhookProcessor defines the interface for webhook processing plugins.
+// Implement this interface to add new webhook processing capabilities
+// (e.g., Slack notifications, PagerDuty integration, custom forwarding).
+type WebhookProcessor interface {
+	// Name returns a unique identifier for this processor
+	Name() string
+
+	// CanProcess determines if this processor should handle the given event.
+	// Return true if this processor is relevant for the event based on
+	// alert status, tags, monitor type, or other criteria.
+	CanProcess(event *WebhookEvent, config *WebhookConfig) bool
+
+	// Process handles the webhook event. It should perform its specific
+	// action (forward, notify, create downtime, etc.) and return a result.
+	// Processing happens asynchronously - errors are logged but don't block other processors.
+	Process(event *WebhookEvent, config *WebhookConfig) ProcessorResult
+}
+
+// ProcessorResult contains the outcome of a processor's execution
+type ProcessorResult struct {
+	ProcessorName string   `json:"processor_name"`
+	Success       bool     `json:"success"`
+	Message       string   `json:"message,omitempty"`
+	Error         string   `json:"error,omitempty"`
+	ForwardedTo   []string `json:"forwarded_to,omitempty"` // URLs that received the webhook
+}
+
 // WebhookPayload represents the incoming webhook data from Datadog
 type WebhookPayload struct {
+	// Standard Datadog fields
 	AlertID       int64    `json:"alert_id"`
 	AlertTitle    string   `json:"alert_title"`
 	AlertMessage  string   `json:"alert_message"`
@@ -24,6 +52,19 @@ type WebhookPayload struct {
 	Link          string   `json:"link"`
 	OrgID         int64    `json:"org_id"`
 	OrgName       string   `json:"org_name"`
+
+	// Custom fields from Terraform webhook config
+	AlertState          string `json:"ALERT_STATE"`
+	AlertTitleCustom    string `json:"ALERT_TITLE"`
+	ApplicationLongname string `json:"APPLICATION_LONGNAME"`
+	ApplicationTeam     string `json:"APPLICATION_TEAM"`
+	DetailedDescription string `json:"DETAILED_DESCRIPTION"`
+	Impact              string `json:"IMPACT"`
+	Metric              string `json:"METRIC"`
+	SupportGroup        string `json:"SUPPORT_GROUP"`
+	Threshold           string `json:"THRESHOLD"`
+	Value               string `json:"VALUE"`
+	Urgency             string `json:"URGENCY"`
 }
 
 // WebhookEvent represents a stored webhook event

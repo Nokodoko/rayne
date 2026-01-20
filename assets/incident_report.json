@@ -1,0 +1,68 @@
+{
+  "template_id": "incident_report",
+  "version": "1.0",
+  "sections": {
+    "summary": {
+      "monitor_id": "{{monitor_id}}",
+      "monitor_name": "{{monitor_name}}",
+      "alert_status": "{{alert_status}}",
+      "application_team": "{{application_team}}",
+      "service": "{{service}}",
+      "hostname": "{{hostname}}",
+      "timestamp": "{{timestamp}}",
+      "scope": "{{scope}}"
+    },
+    "root_cause_analysis": {
+      "likely_cause": "{{likely_cause}}",
+      "confidence": "{{confidence}}",
+      "evidence": [
+        "{{evidence_1}}",
+        "{{evidence_2}}"
+      ],
+      "affected_components": [
+        "{{component_1}}",
+        "{{component_2}}"
+      ]
+    },
+    "impact_assessment": {
+      "severity": "{{severity}}",
+      "affected_users": "{{affected_users}}",
+      "affected_services": [
+        "{{affected_service_1}}"
+      ],
+      "business_impact": "{{business_impact}}"
+    },
+    "recommendations": {
+      "immediate_actions": [
+        "{{immediate_action_1}}",
+        "{{immediate_action_2}}"
+      ],
+      "follow_up_actions": [
+        "{{follow_up_1}}"
+      ],
+      "preventive_measures": [
+        "{{preventive_1}}"
+      ]
+    },
+    "similar_incidents": {
+      "found": "{{similar_found}}",
+      "references": [
+        {
+          "monitor_id": "{{similar_monitor_id}}",
+          "similarity_score": "{{similarity_score}}",
+          "resolution": "{{previous_resolution}}"
+        }
+      ]
+    },
+    "metadata": {
+      "generated_by": "claude-agent",
+      "template_version": "1.0",
+      "analysis_timestamp": "{{analysis_timestamp}}"
+    }
+  },
+  "output_format": {
+    "type": "markdown",
+    "include_raw_payload": false,
+    "include_metrics_queries": true
+  }
+}
