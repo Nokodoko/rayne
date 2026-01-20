@@ -73,8 +73,8 @@ function httpRequest(url, method, data = null) {
     });
 }
 
-// Create Datadog Notebook with incident report
-async function createDatadogNotebook(payload, analysis, similarRCAs = []) {
+// Create Datadog Notebook with incident report and hyperlinks
+async function createDatadogNotebook(payload, analysis, similarRCAs = [], datadogUrls = null) {
     if (!DD_API_KEY || !DD_APP_KEY) {
         console.log('[Notebook] Skipping - DD_API_KEY or DD_APP_KEY not set');
         return null;
@@ -90,15 +90,69 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = []) {
     const applicationTeam = payload.APPLICATION_TEAM || payload.application_team || 'N/A';
     const timestamp = new Date().toISOString();
 
+    // Build default URLs if not provided
+    const ddBaseUrl = 'https://app.datadoghq.com';
+    const nowTs = Math.floor(Date.now() / 1000) * 1000;
+    const thirtyMinAgo = nowTs - (30 * 60 * 1000);
+
+    const urls = datadogUrls || {
+        monitor: monitorId ? `${ddBaseUrl}/monitors/${monitorId}` : null,
+        host: hostname !== 'N/A' ? `${ddBaseUrl}/infrastructure?host=${encodeURIComponent(hostname.split('.')[0])}` : null,
+        hostDashboard: hostname !== 'N/A' ? `${ddBaseUrl}/dash/integration/system_overview?tpl_var_host=${encodeURIComponent(hostname.split('.')[0])}` : null,
+        logsHost: hostname !== 'N/A' ? `${ddBaseUrl}/logs?query=${encodeURIComponent(`host:${hostname.split('.')[0]}*`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}` : null,
+        logsService: service !== 'N/A' ? `${ddBaseUrl}/logs?query=${encodeURIComponent(`service:${service}`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}` : null,
+        logsErrors: `${ddBaseUrl}/logs?query=${encodeURIComponent(`status:error`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}`,
+        apmService: service !== 'N/A' ? `${ddBaseUrl}/apm/services/${service}/operations` : null,
+        apmTraces: service !== 'N/A' ? `${ddBaseUrl}/apm/traces?query=${encodeURIComponent(`service:${service}`)}&start=${thirtyMinAgo}&end=${nowTs}` : null,
+        apmErrors: service !== 'N/A' ? `${ddBaseUrl}/apm/traces?query=${encodeURIComponent(`service:${service} status:error`)}&start=${thirtyMinAgo}&end=${nowTs}` : null,
+        events: `${ddBaseUrl}/event/explorer?query=${encodeURIComponent('sources:*')}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}`,
+        eventsHost: hostname !== 'N/A' ? `${ddBaseUrl}/event/explorer?query=${encodeURIComponent(`host:${hostname.split('.')[0]}`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}` : null,
+        dbm: service !== 'N/A' ? `${ddBaseUrl}/databases?query=${encodeURIComponent(`service:${service}`)}` : null,
+        dbmQueries: `${ddBaseUrl}/databases/queries`,
+        metrics: hostname !== 'N/A' ? `${ddBaseUrl}/metric/explorer?exp_metric=system.cpu.user&exp_scope=${encodeURIComponent(`host:${hostname.split('.')[0]}`)}` : null,
+    };
+
     // Build similar RCAs markdown section
     let similarRCAsMarkdown = '';
     if (similarRCAs.length > 0) {
         similarRCAsMarkdown = `\n\n## Similar Past Incidents\n\n`;
         similarRCAs.forEach((rca, i) => {
-            similarRCAsMarkdown += `### ${i + 1}. ${rca.payload?.monitor_name || 'Unknown'} (${(rca.score * 100).toFixed(0)}% similar)\n`;
+            const rcaMonitorId = rca.payload?.monitor_id;
+            const rcaMonitorName = rca.payload?.monitor_name || 'Unknown';
+            const rcaMonitorUrl = rcaMonitorId ? `${ddBaseUrl}/monitors/${rcaMonitorId}` : null;
+            similarRCAsMarkdown += `### ${i + 1}. ${rcaMonitorUrl ? `[${rcaMonitorName}](${rcaMonitorUrl})` : rcaMonitorName} (${(rca.score * 100).toFixed(0)}% similar)\n`;
             similarRCAsMarkdown += `${rca.payload?.analysis?.substring(0, 300) || 'No analysis available'}...\n\n`;
         });
     }
+
+    // Build quick links section
+    let quickLinksMarkdown = '### 🔗 Quick Links\n\n';
+    if (urls.monitor) quickLinksMarkdown += `- [📊 View Monitor](${urls.monitor})\n`;
+    if (urls.logsHost || urls.logsService) quickLinksMarkdown += `- [📋 View Logs](${urls.logsHost || urls.logsService || urls.logsErrors})\n`;
+    if (urls.apmService) quickLinksMarkdown += `- [🔍 APM Service](${urls.apmService})\n`;
+    if (urls.apmTraces) quickLinksMarkdown += `- [🔗 APM Traces](${urls.apmTraces})\n`;
+    if (urls.apmErrors) quickLinksMarkdown += `- [⚠️ Error Traces](${urls.apmErrors})\n`;
+    if (urls.host) quickLinksMarkdown += `- [🖥️ Host Infrastructure](${urls.host})\n`;
+    if (urls.hostDashboard) quickLinksMarkdown += `- [📈 Host Dashboard](${urls.hostDashboard})\n`;
+    if (urls.metrics) quickLinksMarkdown += `- [📉 Metrics Explorer](${urls.metrics})\n`;
+    if (urls.events) quickLinksMarkdown += `- [📅 Events](${urls.events})\n`;
+    if (urls.dbm) quickLinksMarkdown += `- [🗄️ Database Monitoring](${urls.dbm})\n`;
+    if (urls.dbmQueries) quickLinksMarkdown += `- [💾 DB Queries](${urls.dbmQueries})\n`;
+
+    // Build header with hyperlinks in table
+    const headerMarkdown = `# Incident Report: ${monitorName}\n\n` +
+        `**Generated:** ${timestamp}\n\n` +
+        `---\n\n` +
+        `| Field | Value |\n` +
+        `|-------|-------|\n` +
+        `| Monitor ID | ${urls.monitor ? `[${monitorId}](${urls.monitor})` : monitorId} |\n` +
+        `| Alert Status | **${alertStatus}** |\n` +
+        `| Hostname | ${urls.host ? `[${hostname}](${urls.host})` : hostname} |\n` +
+        `| Service | ${urls.apmService ? `[${service}](${urls.apmService})` : service} |\n` +
+        `| Scope | ${scope} |\n` +
+        `| Application Team | ${applicationTeam} |\n` +
+        `| Tags | ${tags.join(', ') || 'N/A'} |\n\n` +
+        quickLinksMarkdown;
 
     const notebookData = {
         data: {
@@ -106,24 +160,13 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = []) {
             attributes: {
                 name: `[Incident Report] ${monitorName} - ${timestamp.split('T')[0]}`,
                 cells: [
-                    // Header cell
+                    // Header cell with hyperlinks
                     {
                         type: "notebook_cells",
                         attributes: {
                             definition: {
                                 type: "markdown",
-                                text: `# Incident Report: ${monitorName}\n\n` +
-                                    `**Generated:** ${timestamp}\n\n` +
-                                    `---\n\n` +
-                                    `| Field | Value |\n` +
-                                    `|-------|-------|\n` +
-                                    `| Monitor ID | ${monitorId} |\n` +
-                                    `| Alert Status | **${alertStatus}** |\n` +
-                                    `| Hostname | ${hostname} |\n` +
-                                    `| Service | ${service} |\n` +
-                                    `| Scope | ${scope} |\n` +
-                                    `| Application Team | ${applicationTeam} |\n` +
-                                    `| Tags | ${tags.join(', ') || 'N/A'} |\n`
+                                text: headerMarkdown
                             }
                         }
                     },
@@ -162,6 +205,33 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = []) {
                             time: null
                         }
                     }] : []),
+                    // Log stream widget (if hostname or service available)
+                    ...((hostname !== 'N/A' || service !== 'N/A') ? [{
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: `## 📋 Related Logs\n\n` +
+                                    `${urls.logsHost ? `- [View Host Logs](${urls.logsHost})\n` : ''}` +
+                                    `${urls.logsService ? `- [View Service Logs](${urls.logsService})\n` : ''}` +
+                                    `- [View Error Logs](${urls.logsErrors})\n`
+                            }
+                        }
+                    }] : []),
+                    // APM section (if service available)
+                    ...(service !== 'N/A' ? [{
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: `## 🔍 APM & Traces\n\n` +
+                                    `${urls.apmService ? `- [Service Overview](${urls.apmService})\n` : ''}` +
+                                    `${urls.apmTraces ? `- [View All Traces](${urls.apmTraces})\n` : ''}` +
+                                    `${urls.apmErrors ? `- [Error Traces Only](${urls.apmErrors})\n` : ''}` +
+                                    `${urls.dbm ? `- [Database Monitoring](${urls.dbm})\n` : ''}`
+                            }
+                        }
+                    }] : []),
                     // Similar incidents cell
                     ...(similarRCAs.length > 0 ? [{
                         type: "notebook_cells",
@@ -172,7 +242,7 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = []) {
                             }
                         }
                     }] : []),
-                    // Footer cell
+                    // Footer cell with hyperlinks
                     {
                         type: "notebook_cells",
                         attributes: {
@@ -180,7 +250,10 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = []) {
                                 type: "markdown",
                                 text: `---\n\n` +
                                     `*This incident report was automatically generated by Rayne Claude Agent.*\n\n` +
-                                    `[View Monitor](${payload.link || `https://app.datadoghq.com/monitors/${monitorId}`})`
+                                    `**Actions:**\n` +
+                                    `${urls.monitor ? `- [View Monitor](${urls.monitor})\n` : ''}` +
+                                    `${urls.monitor ? `- [Edit Monitor](${urls.monitor}/edit)\n` : ''}` +
+                                    `${urls.events ? `- [View Related Events](${urls.events})\n` : ''}`
                             }
                         }
                     }
@@ -533,8 +606,196 @@ const server = http.createServer(async (req, res) => {
                 });
             }
 
-            // Build comprehensive prompt with full payload context
-            const prompt = `You are an SRE analyzing a Datadog alert. ${instructions || ''}
+            // Pre-fetch Datadog data for comprehensive analysis
+            console.log(`[Analyze] Pre-fetching Datadog data for analysis...`);
+
+            // Datadog URL builder helper
+            const ddBaseUrl = 'https://app.datadoghq.com';
+            const nowTs = Math.floor(Date.now() / 1000) * 1000;
+            const thirtyMinAgo = nowTs - (30 * 60 * 1000);
+
+            const buildDatadogUrls = (query, hostname, service, monitorId) => {
+                const encodedQuery = encodeURIComponent(query || '');
+                return {
+                    logs: `${ddBaseUrl}/logs?query=${encodedQuery}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}&live=true`,
+                    logsHost: hostname ? `${ddBaseUrl}/logs?query=${encodeURIComponent(`host:${hostname.split('.')[0]}*`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}` : null,
+                    logsService: service ? `${ddBaseUrl}/logs?query=${encodeURIComponent(`service:${service}`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}` : null,
+                    logsErrors: `${ddBaseUrl}/logs?query=${encodeURIComponent(`status:error`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}`,
+                    apmService: service ? `${ddBaseUrl}/apm/services/${service}/operations` : null,
+                    apmTraces: service ? `${ddBaseUrl}/apm/traces?query=${encodeURIComponent(`service:${service}`)}&start=${thirtyMinAgo}&end=${nowTs}` : null,
+                    apmErrors: service ? `${ddBaseUrl}/apm/traces?query=${encodeURIComponent(`service:${service} status:error`)}&start=${thirtyMinAgo}&end=${nowTs}` : null,
+                    host: hostname ? `${ddBaseUrl}/infrastructure?host=${encodeURIComponent(hostname.split('.')[0])}` : null,
+                    hostDashboard: hostname ? `${ddBaseUrl}/dash/integration/system_overview?tpl_var_host=${encodeURIComponent(hostname.split('.')[0])}` : null,
+                    monitor: monitorId ? `${ddBaseUrl}/monitors/${monitorId}` : null,
+                    events: `${ddBaseUrl}/event/explorer?query=${encodeURIComponent('sources:*')}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}`,
+                    eventsHost: hostname ? `${ddBaseUrl}/event/explorer?query=${encodeURIComponent(`host:${hostname.split('.')[0]}`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}` : null,
+                    dbm: service ? `${ddBaseUrl}/databases?query=${encodeURIComponent(`service:${service}`)}` : null,
+                    dbmQueries: `${ddBaseUrl}/databases/queries`,
+                    metrics: hostname ? `${ddBaseUrl}/metric/explorer?exp_metric=system.cpu.user&exp_scope=${encodeURIComponent(`host:${hostname.split('.')[0]}`)}` : null,
+                };
+            };
+
+            const datadogUrls = buildDatadogUrls(null, hostname, service, monitorId);
+
+            let logsData = null;
+            let hostData = null;
+            let eventsData = null;
+            let monitorData = null;
+            let logQuery = null;
+
+            // Fetch logs related to the alert
+            try {
+                logQuery = hostname
+                    ? `host:${hostname.split('.')[0]}* status:error OR status:warn`
+                    : service
+                        ? `service:${service} status:error OR status:warn`
+                        : `status:error`;
+                console.log(`[Analyze] Fetching logs with query: ${logQuery}`);
+                logsData = await executeDDLibTool('search_logs', {
+                    query: logQuery,
+                    from_time: 'now-30m',
+                    to_time: 'now',
+                    limit: 20
+                });
+                // Update URLs with actual query used
+                datadogUrls.logsQuery = `${ddBaseUrl}/logs?query=${encodeURIComponent(logQuery)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}&live=true`;
+                console.log(`[Analyze] Fetched ${logsData?.count || 0} log entries`);
+            } catch (err) {
+                console.log(`[Analyze] Failed to fetch logs: ${err.message}`);
+            }
+
+            // Fetch host information if hostname is available
+            if (hostname) {
+                try {
+                    console.log(`[Analyze] Fetching host info for: ${hostname}`);
+                    hostData = await executeDDLibTool('get_host_info', { hostname: hostname.split('.')[0] });
+                    console.log(`[Analyze] Host info fetched: ${hostData?.hostname || 'not found'}`);
+                } catch (err) {
+                    console.log(`[Analyze] Failed to fetch host info: ${err.message}`);
+                }
+            }
+
+            // Fetch recent events
+            try {
+                console.log(`[Analyze] Fetching recent events...`);
+                eventsData = await executeDDLibTool('get_events', {
+                    from_time: Math.floor(Date.now() / 1000) - 1800, // Last 30 min
+                    to_time: Math.floor(Date.now() / 1000)
+                });
+                console.log(`[Analyze] Fetched ${eventsData?.count || 0} events`);
+            } catch (err) {
+                console.log(`[Analyze] Failed to fetch events: ${err.message}`);
+            }
+
+            // Fetch monitor details
+            if (monitorId) {
+                try {
+                    console.log(`[Analyze] Fetching monitor details for: ${monitorId}`);
+                    monitorData = await executeDDLibTool('get_monitor_details', { monitor_id: monitorId });
+                    console.log(`[Analyze] Monitor details fetched: ${monitorData?.name || 'not found'}`);
+                } catch (err) {
+                    console.log(`[Analyze] Failed to fetch monitor details: ${err.message}`);
+                }
+            }
+
+            // Build Datadog context section with hyperlinks
+            let datadogContext = '\n## Live Datadog Data\n';
+            datadogContext += `\n**Quick Links:** `;
+            datadogContext += datadogUrls.monitor ? `[Monitor](${datadogUrls.monitor}) | ` : '';
+            datadogContext += datadogUrls.logsQuery ? `[Logs](${datadogUrls.logsQuery}) | ` : '';
+            datadogContext += datadogUrls.apmService ? `[APM Service](${datadogUrls.apmService}) | ` : '';
+            datadogContext += datadogUrls.host ? `[Host Infrastructure](${datadogUrls.host}) | ` : '';
+            datadogContext += datadogUrls.events ? `[Events](${datadogUrls.events})` : '';
+            datadogContext += `\n`;
+
+            if (logsData && logsData.logs && logsData.logs.length > 0) {
+                datadogContext += `\n### Recent Error/Warning Logs (last 30 min)\n`;
+                datadogContext += `📋 [View all ${logsData.count} logs in Datadog](${datadogUrls.logsQuery})\n\n`;
+                datadogContext += `Found ${logsData.count} relevant log entries:\n\n`;
+                logsData.logs.slice(0, 10).forEach((log, i) => {
+                    const logService = log.service || 'unknown';
+                    const logHost = log.host || 'unknown';
+                    const logServiceUrl = `${ddBaseUrl}/logs?query=${encodeURIComponent(`service:${logService}`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}`;
+                    const logHostUrl = `${ddBaseUrl}/logs?query=${encodeURIComponent(`host:${logHost}`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}`;
+
+                    datadogContext += `**${i + 1}. [${log.status || 'INFO'}] ${log.timestamp || 'N/A'}**\n`;
+                    datadogContext += `- Service: [${logService}](${logServiceUrl})\n`;
+                    datadogContext += `- Host: [${logHost}](${logHostUrl})\n`;
+                    datadogContext += `- Message: ${(log.message || '').substring(0, 300)}${log.message?.length > 300 ? '...' : ''}\n`;
+                    // Add trace link if trace_id is available
+                    if (log.trace_id) {
+                        datadogContext += `- 🔗 [View Trace](${ddBaseUrl}/apm/trace/${log.trace_id})\n`;
+                    }
+                    datadogContext += `\n`;
+                });
+            } else {
+                datadogContext += `\n### Recent Logs\n`;
+                datadogContext += `No error/warning logs found. [Search all logs](${datadogUrls.logsErrors})\n`;
+            }
+
+            if (hostData && !hostData.error) {
+                datadogContext += `\n### Host Information: [${hostData.hostname || hostname}](${datadogUrls.host})\n`;
+                datadogContext += `📊 [View Host Dashboard](${datadogUrls.hostDashboard}) | [View Metrics](${datadogUrls.metrics})\n\n`;
+                datadogContext += `- Status: ${hostData.up ? '🟢 UP' : '🔴 DOWN'}\n`;
+                datadogContext += `- Is Muted: ${hostData.is_muted || false}\n`;
+                datadogContext += `- Apps: ${hostData.apps?.join(', ') || 'N/A'}\n`;
+                datadogContext += `- Sources: ${hostData.sources?.join(', ') || 'N/A'}\n`;
+                if (hostData.metrics) {
+                    datadogContext += `- CPU: ${hostData.metrics.cpu || 'N/A'}%\n`;
+                    datadogContext += `- Memory: ${hostData.metrics.memory || 'N/A'}%\n`;
+                    datadogContext += `- Load: ${hostData.metrics.load || 'N/A'}\n`;
+                }
+            } else if (hostname) {
+                datadogContext += `\n### Host: [${hostname}](${datadogUrls.host})\n`;
+                datadogContext += `Host details not available. [View in Infrastructure](${datadogUrls.host})\n`;
+            }
+
+            if (service) {
+                datadogContext += `\n### APM Service: [${service}](${datadogUrls.apmService})\n`;
+                datadogContext += `🔍 [View Traces](${datadogUrls.apmTraces}) | [Error Traces](${datadogUrls.apmErrors})`;
+                if (datadogUrls.dbm) {
+                    datadogContext += ` | [Database Queries](${datadogUrls.dbm})`;
+                }
+                datadogContext += `\n`;
+            }
+
+            if (eventsData && eventsData.events && eventsData.events.length > 0) {
+                datadogContext += `\n### Recent Events (last 30 min)\n`;
+                datadogContext += `📅 [View all events in Event Explorer](${datadogUrls.events})\n\n`;
+                eventsData.events.slice(0, 5).forEach((event, i) => {
+                    const eventUrl = event.id ? `${ddBaseUrl}/event/event?id=${event.id}` : datadogUrls.events;
+                    datadogContext += `${i + 1}. **[${event.alert_type || 'info'}]** [${event.title || 'N/A'}](${eventUrl})\n`;
+                    datadogContext += `   - Source: ${event.source || 'N/A'}\n`;
+                    if (event.host) {
+                        const eventHostUrl = `${ddBaseUrl}/infrastructure?host=${encodeURIComponent(event.host)}`;
+                        datadogContext += `   - Host: [${event.host}](${eventHostUrl})\n`;
+                    }
+                });
+            } else {
+                datadogContext += `\n### Recent Events\n`;
+                datadogContext += `No recent events. [View Event Explorer](${datadogUrls.events})\n`;
+            }
+
+            if (monitorData && !monitorData.error) {
+                datadogContext += `\n### Monitor Configuration: [${monitorData.name}](${datadogUrls.monitor})\n`;
+                datadogContext += `- Type: ${monitorData.type}\n`;
+                datadogContext += `- Query: \`${monitorData.query || 'N/A'}\`\n`;
+                datadogContext += `- Created by: ${monitorData.creator || 'N/A'}\n`;
+                datadogContext += `- 🔗 [Edit Monitor](${datadogUrls.monitor}/edit)\n`;
+            } else if (monitorId) {
+                datadogContext += `\n### Monitor: [View Monitor #${monitorId}](${datadogUrls.monitor})\n`;
+            }
+
+            // Add Database Monitoring section if service is database-related
+            if (service && (service.includes('postgres') || service.includes('mysql') || service.includes('db') || service.includes('database'))) {
+                datadogContext += `\n### Database Monitoring\n`;
+                datadogContext += `🗄️ [View Database Queries](${datadogUrls.dbmQueries}) | [Service DBM](${datadogUrls.dbm})\n`;
+            }
+
+            // Build comprehensive prompt with full payload context AND live data
+            const prompt = `You are an SRE analyzing a Datadog alert. You have been provided with LIVE data from Datadog including recent logs, host information, and events. Use this data to provide evidence-based root cause analysis.
+
+${instructions || ''}
 
 ## Full Alert Payload
 ${JSON.stringify(fullPayload, null, 2)}
@@ -548,25 +809,21 @@ ${JSON.stringify(fullPayload, null, 2)}
 - Application Team: ${applicationTeam || 'N/A'}
 - Tags: ${tags?.join(', ') || 'N/A'}
 
-${similarRCAContext}
+${datadogContext}
 
-## Available Tools
-You have access to dd_lib Python tools for querying Datadog:
-- get_monitors() - list monitors
-- get_triggered_monitors(limit) - get triggered monitors
-- get_host_info(hostname) - host details
-- search_logs(query, from_time, to_time) - log search
-- get_events(from_time, to_time) - events
+${similarRCAContext}
 
 ${incidentTemplate ? `## Output Template\n${JSON.stringify(incidentTemplate, null, 2)}` : ''}
 
-Provide:
-1) Likely root cause with evidence
-2) Confidence level (low/medium/high)
-3) Two specific recommendations
-4) Related services/hosts that may be affected
+## Analysis Instructions
+Based on the LIVE Datadog data above (logs, host info, events, monitor config), provide:
 
-Keep response concise but thorough.`;
+1) **Root Cause Analysis** - What is the most likely cause? Cite specific evidence from the logs or events.
+2) **Confidence Level** - low/medium/high with reasoning based on available data
+3) **Immediate Actions** - Two specific recommendations to mitigate the issue
+4) **Related Impact** - Other services/hosts that may be affected based on the data
+
+If logs show specific errors, quote them. If host metrics are abnormal, mention them. Ground your analysis in the actual data provided.`;
 
             console.log(`[Analyze] Processing alert for monitor ${monitorId}: ${monitorName}`);
             console.log(`[Analyze] Full payload received with ${Object.keys(fullPayload).length} fields`);
@@ -579,8 +836,8 @@ Keep response concise but thorough.`;
                 console.log(`[Analyze] RCA stored in vector DB with full payload: ${stored}`);
             }
 
-            // Create Datadog Notebook with incident report
-            const notebook = await createDatadogNotebook(fullPayload, result, similarRCAs);
+            // Create Datadog Notebook with incident report and hyperlinks
+            const notebook = await createDatadogNotebook(fullPayload, result, similarRCAs, datadogUrls);
             if (notebook) {
                 console.log(`[Analyze] Incident report notebook created: ${notebook.url}`);
             }

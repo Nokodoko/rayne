@@ -7,8 +7,12 @@ A Go-based REST API server that wraps the Datadog API, providing endpoints to ma
 - **Datadog API Proxy**: Downtimes, events, hosts, and private location management
 - **Webhook Handling**: Receive, store, and process Datadog webhooks with auto-downtime triggers
 - **AI-Powered RCA**: Automatic Root Cause Analysis via Claude Code when alerts trigger
+- **Incident Report Notebooks**: Auto-generated Datadog Notebooks with hyperlinks to all referenced resources
+- **Pre-fetched Datadog Context**: Logs, events, host info, and monitor details fetched before RCA analysis
 - **Vector DB Storage**: Store and retrieve past RCAs using Qdrant for pattern matching
 - **Local Embeddings**: Generate embeddings with Ollama (Gemma 2B) for similarity search
+- **dd_lib Python Tools**: Extensible Python tools for Datadog API with auto-write capability
+- **Desktop Notifications**: Local notification server with Dunst integration (orange border alerts)
 - **RUM Visitor Tracking**: Server-generated UUIDs, session management, and analytics
 - **Demo Data Generators**: Seed fake data for demonstrations
 - **Kubernetes Ready**: Includes manifests for minikube deployment
@@ -118,10 +122,22 @@ export ANTHROPIC_API_KEY=your-anthropic-api-key  # Required for RCA
 # Get service URL
 minikube service rayne-service --url
 
-# Test webhook with RCA trigger
+# Test webhook with RCA trigger (creates Datadog Notebook with hyperlinks)
 curl -X POST $(minikube service rayne-service --url)/v1/webhooks/receive \
   -H "Content-Type: application/json" \
-  -d '{"monitor_id": 123, "monitor_name": "CPU Alert", "alert_status": "Alert", "scope": "host:server-1"}'
+  -d '{
+    "monitor_id": 12345678,
+    "monitor_name": "High CPU Alert",
+    "alert_status": "Alert",
+    "hostname": "web-server-01.prod.example.com",
+    "service": "api-gateway",
+    "scope": "host:web-server-01",
+    "APPLICATION_TEAM": "platform-engineering",
+    "tags": ["env:production", "team:platform"]
+  }'
+
+# Response includes notebook URL:
+# {"event_id":1,"notebook":{"id":"13768151","url":"https://app.datadoghq.com/notebook/13768151"}}
 ```
 
 ### Helm Deployment (Datadog Agent)
@@ -210,9 +226,12 @@ helm install datadog-agent datadog/datadog \
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/health` | Claude Agent health (includes dd_lib/assets status) |
-| POST | `/analyze` | Trigger RCA analysis for an alert |
+| POST | `/analyze` | Trigger RCA analysis with full payload, pre-fetched data, and notebook creation |
 | POST | `/generate-notebook` | Generate Datadog notebook from analysis |
 | GET | `/templates` | List available incident report templates |
+| GET | `/tools` | List available dd_lib tools |
+| POST | `/tools/execute` | Execute a dd_lib tool (e.g., search_logs, get_host_info) |
+| POST | `/tools/create-function` | Create new dd_lib function (auto-write mode) |
 
 ## Environment Variables
 
@@ -220,7 +239,8 @@ helm install datadog-agent datadog/datadog \
 |----------|----------|---------|-------------|
 | `DD_API_KEY` | Yes | - | Datadog API key |
 | `DD_APP_KEY` | Yes | - | Datadog Application key |
-| `ANTHROPIC_API_KEY` | Yes* | - | Anthropic API key for Claude Code (*required for RCA) |
+| `DD_API_URL` | No | https://api.datadoghq.com | Datadog API URL (use https://api.ddog-gov.com for US Gov) |
+| `ANTHROPIC_API_KEY` | No* | - | Anthropic API key (*not needed if using Claude OAuth) |
 | `DB_HOST` | No | localhost | PostgreSQL host |
 | `DB_PORT` | No | 5432 | PostgreSQL port |
 | `DB_USER` | No | - | PostgreSQL user |
@@ -245,22 +265,33 @@ rayne/
 │   │   ├── rum/          # RUM tracking
 │   │   ├── user/         # User management
 │   │   └── webhooks/     # Webhook handling + Claude invocation
+│   │       └── processors/   # Webhook processors (claude_agent.go)
 │   └── Dockerfile
 ├── docker/
 │   └── claude-agent/     # Claude Agent sidecar
 │       ├── Dockerfile    # Node.js + Python + Claude Code CLI
-│       └── agent-server.js # HTTP wrapper for Claude Code
+│       └── agent-server.js # HTTP wrapper for Claude Code (RCA, notebooks, tools)
 ├── dd_lib/               # Python Datadog tools (baked into sidecar)
+│   └── dd_lib/
+│       ├── dd_lib_tools.py   # CLI wrapper for tools (search_logs, get_host_info, etc.)
+│       ├── headers.py        # Datadog API headers
+│       └── keys.py           # API key management
 ├── assets/               # Incident report templates
+│   ├── incident_report.json      # JSON template for structured reports
+│   ├── incident-report-cloned.md # Markdown incident report template
+│   └── logs-analysis.md          # Log analysis template
 ├── k8s/                  # Kubernetes manifests
-│   ├── rayne-deployment.yaml      # Rayne + Claude Agent sidecar
+│   ├── rayne-deployment.yaml      # Rayne + Claude Agent sidecar (with dd_lib volume)
 │   ├── postgres-deployment.yaml   # PostgreSQL
 │   ├── qdrant-deployment.yaml     # Qdrant vector DB
 │   ├── ollama-deployment.yaml     # Ollama (Gemma 2B)
 │   ├── assets-configmap.yaml      # Incident templates
 │   └── anthropic-secrets.yaml     # Anthropic API key
 ├── helm/                 # Helm values for Datadog Agent
-├── scripts/              # Deployment scripts
+├── scripts/
+│   ├── minikube-setup.sh         # Full minikube deployment script
+│   ├── notify-server.py          # Desktop notification server (Dunst)
+│   └── traffic-generator.sh      # API traffic generator with failure injection
 └── docker-compose.yaml
 ```
 
@@ -269,20 +300,69 @@ rayne/
 When a webhook arrives with `alert_status: "Alert"` or `alert_status: "Warn"`:
 
 1. **Rayne** receives the webhook and stores it in PostgreSQL
-2. **Claude Agent** is invoked with the alert details
-3. **Ollama** generates embeddings for the alert to find similar past incidents
-4. **Qdrant** searches for similar RCAs from previous incidents
-5. **Claude Code** analyzes the alert with context from:
+2. **Claude Agent** is invoked with the full webhook payload
+3. **Pre-fetch Datadog Data**: Before analysis, the agent fetches:
+   - Recent error/warning logs (filtered by host or service)
+   - Host information and metrics
+   - Recent events from the last 30 minutes
+   - Monitor configuration details
+4. **Ollama** generates embeddings for the alert to find similar past incidents
+5. **Qdrant** searches for similar RCAs from previous incidents
+6. **Claude Code** analyzes the alert with evidence-based context from:
+   - Live Datadog logs, events, and host metrics
    - Past similar RCAs
-   - Python dd_lib tools for Datadog API access
+   - Python dd_lib tools for additional Datadog API access
    - Incident report templates from assets/
-6. The analysis is stored back in Qdrant for future reference
+7. **Datadog Notebook** is created automatically with the incident report
+8. The analysis is stored back in Qdrant for future reference
+
+### Incident Report Notebooks
+
+Each RCA automatically creates a Datadog Notebook containing:
+
+- **Header Section**: Alert summary with hyperlinked monitor ID, hostname, and service
+- **Quick Links**: Direct links to all relevant Datadog resources:
+  - Monitor (view/edit)
+  - Logs (filtered by host, service, or errors)
+  - APM Service overview
+  - APM Traces (all and error-only)
+  - Host Infrastructure dashboard
+  - Metrics Explorer
+  - Events Explorer
+  - Database Monitoring (if applicable)
+- **Root Cause Analysis**: Claude's evidence-based analysis
+- **CPU Metrics Graph**: Timeseries widget for host CPU usage
+- **Related Logs Section**: Links to filtered log views
+- **APM & Traces Section**: Links to service traces and errors
+- **Similar Past Incidents**: Previous RCAs with similarity scores (hyperlinked)
+- **Footer Actions**: Quick links to view/edit monitor and related events
+
+All hyperlinks include time-range filters (last 30 minutes) and relevant query parameters.
 
 ### Templates Available
 
+- `incident_report.json` - JSON template for structured incident reports
 - `incident-report-cloned.md` - Full incident report template with sections for Summary, Outage Tracking, Response Breakdown, and Organizational Analysis
 - `logs-analysis.md` - Datadog Notebooks log analysis template
 - `prompt.md` - Additional context for RCA generation
+
+### dd_lib Python Tools
+
+The Claude Agent has access to Python tools for querying Datadog APIs:
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `get_monitors` | List all monitors | - |
+| `get_triggered_monitors` | Get monitors in Alert/Warn state | `limit` |
+| `get_host_info` | Get detailed host information | `hostname` |
+| `search_logs` | Search logs with query | `query`, `from_time`, `to_time`, `limit` |
+| `get_events` | Get events in time range | `from_time`, `to_time` |
+| `get_monitor_details` | Get specific monitor config | `monitor_id` |
+| `list_services` | List APM services | - |
+
+Tools can be invoked via the `/tools/execute` endpoint or used automatically during RCA.
+
+**Auto-write Mode**: The agent can create new dd_lib functions dynamically via `/tools/create-function`, allowing it to extend its capabilities as needed.
 
 ## Development
 
@@ -337,6 +417,57 @@ The traffic generator randomly injects 4xx and 5xx errors to simulate real-world
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `FAILURE_RATE` | 10 | Percentage chance of failure per traffic cycle (0-100) |
+
+## Desktop Notifications
+
+Rayne includes a local notification server that receives webhooks and displays desktop notifications via `notify-send` with Dunst integration for custom styling.
+
+### Setup
+
+```bash
+# Start the notification server
+./scripts/notify-server.py
+
+# Or with custom port
+./scripts/notify-server.py -p 8888
+
+# Or bind to localhost only
+./scripts/notify-server.py --bind 127.0.0.1
+```
+
+### Dunst Configuration (Orange Border)
+
+Add this rule to `~/.config/dunst/dunstrc` for orange-bordered Rayne alerts:
+
+```ini
+[rayne_alert]
+    appname = Rayne
+    urgency = critical
+    background = "#1a1a1a"
+    foreground = "#ffffff"
+    frame_color = "#ff8c00"
+    frame_width = 3
+    timeout = 0
+```
+
+Reload dunst: `killall dunst; dunst &`
+
+### Webhook Format
+
+```json
+{
+  "title": "Alert Title",
+  "message": "Alert description",
+  "urgency": "critical"  // critical, normal, or low
+}
+```
+
+### Connecting from Kubernetes
+
+From minikube pods, the notification server is accessible at:
+```
+http://host.minikube.internal:9999
+```
 
 ## Resource Requirements (Minikube)
 

@@ -14,8 +14,8 @@ RUN apk add --no-cache \
     curl \
     bash
 
-# Copy dd_lib Python codebase
-COPY dd_lib/ /app/dd_lib/
+# Copy dd_lib Python codebase (inner package with actual modules)
+COPY dd_lib/dd_lib/ /app/dd_lib/
 
 # Install Python dependencies (requests already installed via apk)
 RUN pip3 install --break-system-packages requests || true
