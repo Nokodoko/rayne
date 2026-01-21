@@ -134,17 +134,22 @@ spec:
             - containerPort: 9000
               name: agent
           env:
-            # Using account-based auth via mounted credentials instead of API key
+            # Sub-agent Datadog keys (for dd_lib and incident reports)
             - name: DD_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: datadog-secrets
+                  name: subagent-datadog-secrets
                   key: api-key
             - name: DD_APP_KEY
               valueFrom:
                 secretKeyRef:
-                  name: datadog-secrets
+                  name: subagent-datadog-secrets
                   key: app-key
+            - name: DD_SITE
+              valueFrom:
+                secretKeyRef:
+                  name: subagent-datadog-secrets
+                  key: site
             # Vector DB connection for RCA storage
             - name: QDRANT_URL
               value: "http://qdrant-service:6333"

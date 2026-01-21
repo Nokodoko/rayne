@@ -5,23 +5,201 @@
 
 set -e
 
+#=============================================================================
+# COLORS & STYLING
+#=============================================================================
+capColor() { gum style --foreground "#118DFF" "$1"; }
+redColor() { gum style --foreground "#D82C20" "$1"; }
+greenColor() { gum style --foreground "#00FF00" "$1"; }
+purpleColor() { gum style --foreground "#9400D3" "$1"; }
+
+#=============================================================================
+# USAGE/HELP
+#=============================================================================
+show_usage() {
+    cat << EOF
+Rayne Minikube Setup Script
+
+USAGE:
+    $(basename "$0") [OPTIONS]
+
+OPTIONS:
+    -a, --api-key KEY      DD_API_KEY for sub-agent (incident reports)
+    -p, --app-key KEY      DD_APP_KEY for sub-agent (incident reports)
+    -s, --site SITE        Datadog site: 'com' (commercial) or 'gov' (government)
+    -r, --rayne-keys MODE  Rayne service keys: 'default' or 'same' (as sub-agent)
+    -h, --help             Show this help message
+
+EXAMPLES:
+    # Interactive mode (gum prompts)
+    $(basename "$0")
+
+    # Direct invocation with flags
+    $(basename "$0") -a "your-api-key" -p "your-app-key" -s gov -r same
+
+    # Commercial site with default Rayne keys
+    $(basename "$0") -a "api-key" -p "app-key" -s com -r default
+
+NOTES:
+    - If no flags provided, interactive gum prompts will guide configuration
+    - Sub-agent keys are used for dd_lib access and incident report creation
+    - Rayne keys are used for APM, DBM, and log collection
+    - 'default' Rayne keys use TF_VAR_ecco_dd_* environment variables
+    - 'same' Rayne keys use the same keys as the sub-agent
+
+EOF
+}
+
+#=============================================================================
+# DEFAULTS
+#=============================================================================
+SUBAGENT_API_KEY=""
+SUBAGENT_APP_KEY=""
+SUBAGENT_SITE="datadoghq.com"
+RAYNE_KEY_MODE="default"
+
+#=============================================================================
+# PARSE FLAGS
+#=============================================================================
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -a|--api-key)
+            SUBAGENT_API_KEY="$2"
+            shift 2
+            ;;
+        -p|--app-key)
+            SUBAGENT_APP_KEY="$2"
+            shift 2
+            ;;
+        -s|--site)
+            if [ "$2" = "gov" ]; then
+                SUBAGENT_SITE="ddog-gov.com"
+            else
+                SUBAGENT_SITE="datadoghq.com"
+            fi
+            shift 2
+            ;;
+        -r|--rayne-keys)
+            RAYNE_KEY_MODE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
+
+#=============================================================================
+# INTERACTIVE MODE (GUM PROMPTS)
+#=============================================================================
+if [ -z "$SUBAGENT_API_KEY" ] || [ -z "$SUBAGENT_APP_KEY" ]; then
+    # Check if gum is installed
+    if ! command -v gum &> /dev/null; then
+        echo "Error: gum is not installed and no flags provided"
+        echo "Install gum: https://github.com/charmbracelet/gum"
+        echo "Or use flags: $(basename "$0") -h"
+        exit 1
+    fi
+
+    gum style \
+        --border double \
+        --padding "1" \
+        --border-foreground "#9400D3" \
+        "Rayne Minikube Setup"
+
+    echo ""
+    echo "$(purpleColor "Step 1:") Choose Datadog $(redColor "domain")"
+    SITE_CHOICE=$(gum choose "Commercial (app.datadoghq.com)" "Government (app.ddog-gov.com)")
+    if [[ "$SITE_CHOICE" == *"Government"* ]]; then
+        SUBAGENT_SITE="ddog-gov.com"
+    else
+        SUBAGENT_SITE="datadoghq.com"
+    fi
+    echo "  Selected: $(greenColor "$SUBAGENT_SITE")"
+
+    echo ""
+    echo "$(purpleColor "Step 2:") Choose $(redColor "API Key") source for $(capColor "Sub-Agent")"
+
+    # Discover environment variables containing DD_API_KEY and build list
+    API_KEY_LIST=$(printf "Enter Manually\n"; env | grep -i "DD_API_KEY\|DD_API\|API_KEY" | grep -v "^_" | cut -d= -f1 | sort -u)
+
+    API_KEY_CHOICE=$(echo "$API_KEY_LIST" | gum filter --placeholder "Search API key env vars...")
+    if [ "$API_KEY_CHOICE" = "Enter Manually" ]; then
+        SUBAGENT_API_KEY=$(gum input --placeholder "Enter DD_API_KEY" --password)
+    else
+        SUBAGENT_API_KEY="${!API_KEY_CHOICE}"
+        echo "  Using: $(greenColor "$API_KEY_CHOICE")"
+    fi
+
+    echo ""
+    echo "$(purpleColor "Step 3:") Choose $(redColor "APP Key") source for $(capColor "Sub-Agent")"
+
+    # Discover environment variables containing DD_APP_KEY and build list
+    APP_KEY_LIST=$(printf "Enter Manually\n"; env | grep -i "DD_APP_KEY\|DD_APP\|APP_KEY" | grep -v "^_" | cut -d= -f1 | sort -u)
+
+    APP_KEY_CHOICE=$(echo "$APP_KEY_LIST" | gum filter --placeholder "Search APP key env vars...")
+    if [ "$APP_KEY_CHOICE" = "Enter Manually" ]; then
+        SUBAGENT_APP_KEY=$(gum input --placeholder "Enter DD_APP_KEY" --password)
+    else
+        SUBAGENT_APP_KEY="${!APP_KEY_CHOICE}"
+        echo "  Using: $(greenColor "$APP_KEY_CHOICE")"
+    fi
+
+    echo ""
+    echo "$(purpleColor "Step 4:") Choose $(redColor "Rayne Service") key configuration"
+    RAYNE_CHOICE=$(gum choose "Default (use TF_VAR_ecco_dd_* keys)" "Same as Sub-Agent (use keys from above)")
+    if [[ "$RAYNE_CHOICE" == *"Same"* ]]; then
+        RAYNE_KEY_MODE="same"
+    else
+        RAYNE_KEY_MODE="default"
+    fi
+    echo "  Selected: $(greenColor "$RAYNE_KEY_MODE")"
+    echo ""
+fi
+
+#=============================================================================
+# SET RAYNE KEYS BASED ON MODE
+#=============================================================================
+if [ "$RAYNE_KEY_MODE" = "same" ]; then
+    RAYNE_API_KEY="$SUBAGENT_API_KEY"
+    RAYNE_APP_KEY="$SUBAGENT_APP_KEY"
+else
+    # Default mode - use TF_VAR_ecco_dd_* keys
+    if [ -z "$TF_VAR_ecco_dd_api_key" ]; then
+        echo "Error: TF_VAR_ecco_dd_api_key not set (required for 'default' Rayne key mode)"
+        echo "Set it: export TF_VAR_ecco_dd_api_key=your-api-key"
+        echo "Or use: $(basename "$0") -r same"
+        exit 1
+    fi
+    if [ -z "$TF_VAR_ecco_dd_app_key" ]; then
+        echo "Error: TF_VAR_ecco_dd_app_key not set (required for 'default' Rayne key mode)"
+        echo "Set it: export TF_VAR_ecco_dd_app_key=your-app-key"
+        echo "Or use: $(basename "$0") -r same"
+        exit 1
+    fi
+    RAYNE_API_KEY="$TF_VAR_ecco_dd_api_key"
+    RAYNE_APP_KEY="$TF_VAR_ecco_dd_app_key"
+fi
+
+#=============================================================================
+# DISPLAY CONFIGURATION
+#=============================================================================
 echo "=== Rayne Minikube Setup ==="
 echo ""
-
-# Check for required environment variables
-if [ -z "$TF_VAR_ecco_dd_api_key" ]; then
-    echo "Error: DD_API_KEY environment variable is not set"
-    echo "Please set it: export DD_API_KEY=your-api-key"
-    exit 1
-fi
-
-if [ -z "$TF_VAR_ecco_dd_app_key" ]; then
-    echo "Error: DD_APP_KEY environment variable is not set"
-    echo "Please set it: export DD_APP_KEY=your-app-key"
-    exit 1
-fi
-
-echo "Datadog API keys found in environment"
+echo "Configuration:"
+echo "  Sub-Agent Site:     $SUBAGENT_SITE"
+echo "  Sub-Agent API Key:  ${SUBAGENT_API_KEY:0:8}..."
+echo "  Sub-Agent APP Key:  ${SUBAGENT_APP_KEY:0:8}..."
+echo "  Rayne Key Mode:     $RAYNE_KEY_MODE"
+echo "  Rayne API Key:      ${RAYNE_API_KEY:0:8}..."
+echo "  Rayne APP Key:      ${RAYNE_APP_KEY:0:8}..."
+echo ""
 
 # Check if minikube is installed
 if ! command -v minikube &> /dev/null; then
@@ -82,11 +260,19 @@ done
 echo "Waiting for PostgreSQL to be ready..."
 kubectl wait --for=condition=ready pod -l app=postgres --timeout=120s
 
-# Create datadog secrets from environment variables (not from file with placeholders)
-echo "Creating Datadog secrets from environment variables..."
+# Create subagent-datadog-secrets (for Claude agent sidecar - incident reports)
+echo "Creating Sub-Agent Datadog secrets..."
+kubectl create secret generic subagent-datadog-secrets \
+    --from-literal=api-key="$SUBAGENT_API_KEY" \
+    --from-literal=app-key="$SUBAGENT_APP_KEY" \
+    --from-literal=site="$SUBAGENT_SITE" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+# Create datadog-secrets (for Rayne service - APM, DBM, logs)
+echo "Creating Rayne Datadog secrets..."
 kubectl create secret generic datadog-secrets \
-    --from-literal=api-key="$TF_VAR_ecco_dd_api_key" \
-    --from-literal=app-key="$TF_VAR_ecco_dd_app_key" \
+    --from-literal=api-key="$RAYNE_API_KEY" \
+    --from-literal=app-key="$RAYNE_APP_KEY" \
     --dry-run=client -o yaml | kubectl apply -f -
 
 # Create Anthropic secrets for Claude Agent
@@ -146,8 +332,8 @@ else
     if helm list | grep -q datadog-agent; then
         echo "Upgrading existing Datadog Agent..."
         helm upgrade datadog-agent datadog/datadog \
-            --set datadog.apiKey="$TF_VAR_ecco_dd_api_key" \
-            --set datadog.appKey="$TF_VAR_ecco_dd_app_key" \
+            --set datadog.apiKey="$RAYNE_API_KEY" \
+            --set datadog.appKey="$RAYNE_APP_KEY" \
             --set datadog.clusterName=rayne \
             --set datadog.site=datadoghq.com \
             --set agents.enabled=true \
@@ -156,8 +342,8 @@ else
     else
         echo "Installing Datadog Agent..."
         helm install datadog-agent datadog/datadog \
-            --set datadog.apiKey="$TF_VAR_ecco_dd_api_key" \
-            --set datadog.appKey="$TF_VAR_ecco_dd_app_key" \
+            --set datadog.apiKey="$RAYNE_API_KEY" \
+            --set datadog.appKey="$RAYNE_APP_KEY" \
             --set datadog.clusterName=rayne \
             --set datadog.site=datadoghq.com \
             --set agents.enabled=true \
