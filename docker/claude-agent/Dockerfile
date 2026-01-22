@@ -20,8 +20,9 @@ COPY dd_lib/dd_lib/ /app/dd_lib/
 # Install Python dependencies (requests already installed via apk)
 RUN pip3 install --break-system-packages requests || true
 
-# Install Claude Code CLI
-RUN npm install -g @anthropic-ai/claude-code
+# Install Claude Code CLI and Anthropic SDK
+RUN npm install -g @anthropic-ai/claude-code && \
+    npm install -g @anthropic-ai/sdk
 
 # Create working directories (use existing node user from base image)
 RUN mkdir -p /app/work /app/assets && \

@@ -25,9 +25,9 @@ func Get[T any](w http.ResponseWriter, r *http.Request, url string) (T, int, err
 	zero := *new(T) // HACK:work around to return a nil value for a generic type -- contstruct a new type T with zero value
 
 	body := bytes.NewBufferString("")
-	req, err := http.NewRequest("GET", url, body)
+	req, err := http.NewRequestWithContext(r.Context(), "GET", url, body)
 	if err != nil {
-		log.Fatalf("error: %v", err)
+		log.Printf("error creating request: %v", err)
 		return zero, http.StatusInternalServerError, err
 	}
 
@@ -70,8 +70,9 @@ func Post[T any](w http.ResponseWriter, r *http.Request, url string, payload int
 		return zero, http.StatusInternalServerError, err
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequestWithContext(r.Context(), "POST", url, bytes.NewBuffer(jsonBody))
 	if err != nil {
+		log.Printf("error creating POST request: %v", err)
 		return zero, http.StatusInternalServerError, err
 	}
 
@@ -109,8 +110,9 @@ func Put[T any](w http.ResponseWriter, r *http.Request, url string, payload inte
 		return zero, http.StatusInternalServerError, err
 	}
 
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequestWithContext(r.Context(), "PUT", url, bytes.NewBuffer(jsonBody))
 	if err != nil {
+		log.Printf("error creating PUT request: %v", err)
 		return zero, http.StatusInternalServerError, err
 	}
 
@@ -143,8 +145,9 @@ func Delete[T any](w http.ResponseWriter, r *http.Request, url string) (T, int, 
 	var parsedResponse T
 	zero := *new(T)
 
-	req, err := http.NewRequest("DELETE", url, nil)
+	req, err := http.NewRequestWithContext(r.Context(), "DELETE", url, nil)
 	if err != nil {
+		log.Printf("error creating DELETE request: %v", err)
 		return zero, http.StatusInternalServerError, err
 	}
 

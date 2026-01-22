@@ -27,6 +27,85 @@ func NewHandler(storage *Storage, processor *Processor) *Handler {
 	}
 }
 
+// triggerAnalysis sends the webhook payload to the claude-agent /analyze endpoint
+// to generate an incident report notebook in Datadog
+func triggerAnalysis(payload WebhookPayload) {
+	agentURL := os.Getenv("CLAUDE_AGENT_URL")
+	if agentURL == "" {
+		agentURL = "http://localhost:9000"
+	}
+
+	// Use fallbacks for monitor_id and monitor_name (Datadog test webhooks may omit these)
+	monitorID := payload.MonitorID
+	if monitorID == 0 {
+		monitorID = payload.AlertID // Fallback to alert_id
+	}
+	monitorName := payload.MonitorName
+	if monitorName == "" {
+		monitorName = payload.AlertTitleCustom // Fallback to ALERT_TITLE
+	}
+	if monitorName == "" {
+		monitorName = payload.AlertTitle // Fallback to alert_title
+	}
+
+	log.Printf("[WEBHOOK] Triggering analysis for monitor %d: %s", monitorID, monitorName)
+
+	// Build analyze request payload
+	analyzePayload := map[string]interface{}{
+		"payload": map[string]interface{}{
+			"monitor_id":           monitorID,
+			"monitor_name":         monitorName,
+			"alert_status":         payload.AlertStatus,
+			"hostname":             payload.Hostname,
+			"service":              payload.Service,
+			"scope":                payload.Scope,
+			"tags":                 payload.Tags,
+			"ALERT_STATE":          payload.AlertState,
+			"ALERT_TITLE":          payload.AlertTitleCustom,
+			"APPLICATION_TEAM":     payload.ApplicationTeam,
+			"APPLICATION_LONGNAME": payload.ApplicationLongname,
+			"DETAILED_DESCRIPTION": payload.DetailedDescription,
+			"IMPACT":               payload.Impact,
+			"METRIC":               payload.Metric,
+			"SUPPORT_GROUP":        payload.SupportGroup,
+			"THRESHOLD":            payload.Threshold,
+			"VALUE":                payload.Value,
+			"URGENCY":              payload.Urgency,
+		},
+	}
+
+	jsonData, err := json.Marshal(analyzePayload)
+	if err != nil {
+		log.Printf("[WEBHOOK] Failed to marshal analyze payload: %v", err)
+		return
+	}
+
+	client := &http.Client{Timeout: 120 * time.Second} // Long timeout for Claude analysis
+	resp, err := client.Post(agentURL+"/analyze", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Printf("[WEBHOOK] Failed to trigger analysis at %s: %v", agentURL, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Printf("[WEBHOOK] Failed to decode analysis response: %v", err)
+		return
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		if notebook, ok := result["notebook"].(map[string]interface{}); ok {
+			if url, ok := notebook["url"].(string); ok {
+				log.Printf("[WEBHOOK] Incident report created: %s", url)
+			}
+		}
+		log.Printf("[WEBHOOK] Analysis completed for monitor %d", payload.MonitorID)
+	} else {
+		log.Printf("[WEBHOOK] Analysis failed with status %d: %v", resp.StatusCode, result)
+	}
+}
+
 // sendDesktopNotification sends a notification to the local notify-server
 // The server URL is configured via NOTIFY_SERVER_URL env var (default: http://host.minikube.internal:9999)
 func sendDesktopNotification(payload WebhookPayload) {
@@ -94,7 +173,10 @@ func (h *Handler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) (int, a
 	// Send desktop notification with full payload
 	go sendDesktopNotification(payload)
 
-	// Process asynchronously
+	// Trigger Claude analysis and incident report generation
+	go triggerAnalysis(payload)
+
+	// Process asynchronously (downtime creation, forwarding, etc.)
 	go h.processor.Process(event)
 
 	return http.StatusAccepted, map[string]interface{}{

@@ -50,6 +50,21 @@ func traceMiddleware(next http.Handler) http.Handler {
 		// Wrap the response writer to capture status code
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 
+		// Recover from panics and tag them as errors
+		defer func() {
+			if err := recover(); err != nil {
+				span.SetTag(ext.Error, true)
+				span.SetTag("error.message", fmt.Sprintf("panic: %v", err))
+				span.SetTag("error.type", "panic")
+				span.SetTag("error.stack", fmt.Sprintf("%v", err))
+				span.SetTag(ext.HTTPCode, http.StatusInternalServerError)
+				log.Printf("[APM] Panic recovered: %s %s -> %v", r.Method, r.URL.Path, err)
+
+				// Return 500 to the client
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			}
+		}()
+
 		// Call the next handler with the span in context
 		next.ServeHTTP(rec, r.WithContext(ctx))
 

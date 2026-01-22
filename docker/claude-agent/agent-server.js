@@ -17,9 +17,85 @@ const OLLAMA_URL = process.env.OLLAMA_URL || 'http://ollama-service:11434';
 const RCA_COLLECTION = 'rca_analyses';
 
 // Datadog API configuration
+// Construct API URL from DD_SITE (follows Datadog SDK convention)
 const DD_API_KEY = process.env.DD_API_KEY;
 const DD_APP_KEY = process.env.DD_APP_KEY;
-const DD_API_URL = process.env.DD_API_URL || 'https://api.ddog-gov.com';
+const DD_SITE = process.env.DD_SITE || 'ddog-gov.com';
+const DD_API_URL = `https://api.${DD_SITE}`;
+const DD_APP_URL = `https://app.${DD_SITE}`;  // For notebook hyperlinks
+
+// Claude authentication configuration
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+const CLAUDE_AUTH_MODE = process.env.CLAUDE_AUTH_MODE || 'auto'; // 'token', 'apikey', or 'auto'
+const CLAUDE_HOME = process.env.HOME || '/home/node';
+const CLAUDE_CREDS_PATH = path.join(CLAUDE_HOME, '.claude', '.credentials.json');
+
+// Notification server configuration
+const NOTIFY_SERVER_URL = process.env.NOTIFY_SERVER_URL || 'http://host.minikube.internal:9999';
+
+// Send desktop notification via notify-server (same as webhook receive endpoint)
+async function sendDesktopNotification(payload) {
+    const notifyPayload = {
+        ALERT_STATE: payload.ALERT_STATE || payload.alert_status || '',
+        ALERT_TITLE: payload.ALERT_TITLE || payload.monitor_name || '',
+        APPLICATION_LONGNAME: payload.APPLICATION_LONGNAME || '',
+        APPLICATION_TEAM: payload.APPLICATION_TEAM || payload.application_team || '',
+        DETAILED_DESCRIPTION: payload.DETAILED_DESCRIPTION || '',
+        IMPACT: payload.IMPACT || '',
+        METRIC: payload.METRIC || '',
+        SUPPORT_GROUP: payload.SUPPORT_GROUP || '',
+        THRESHOLD: payload.THRESHOLD || '',
+        VALUE: payload.VALUE || '',
+        URGENCY: payload.URGENCY || ''
+    };
+
+    try {
+        const response = await httpRequest(NOTIFY_SERVER_URL, 'POST', notifyPayload);
+        if (response.status === 200) {
+            console.log(`[Notify] Desktop notification sent: ${notifyPayload.ALERT_TITLE}`);
+        } else {
+            console.log(`[Notify] Notification server returned status ${response.status}`);
+        }
+    } catch (err) {
+        console.log(`[Notify] Failed to send notification to ${NOTIFY_SERVER_URL}: ${err.message}`);
+    }
+}
+
+// Check available auth methods
+function getAuthMethod() {
+    if (CLAUDE_AUTH_MODE === 'apikey' && ANTHROPIC_API_KEY && ANTHROPIC_API_KEY !== 'placeholder-key') {
+        return 'apikey';
+    }
+    if (CLAUDE_AUTH_MODE === 'token' && fs.existsSync(CLAUDE_CREDS_PATH)) {
+        try {
+            const creds = JSON.parse(fs.readFileSync(CLAUDE_CREDS_PATH, 'utf8'));
+            // Check if credentials.json has actual content (not empty object)
+            if (Object.keys(creds).length > 0) {
+                return 'token';
+            }
+        } catch (e) {
+            console.log(`[Auth] Failed to parse credentials.json: ${e.message}`);
+        }
+    }
+    if (CLAUDE_AUTH_MODE === 'auto') {
+        // Try token first
+        if (fs.existsSync(CLAUDE_CREDS_PATH)) {
+            try {
+                const creds = JSON.parse(fs.readFileSync(CLAUDE_CREDS_PATH, 'utf8'));
+                if (Object.keys(creds).length > 0) {
+                    return 'token';
+                }
+            } catch (e) {
+                // Fall through to API key check
+            }
+        }
+        // Then try API key
+        if (ANTHROPIC_API_KEY && ANTHROPIC_API_KEY !== 'placeholder-key') {
+            return 'apikey';
+        }
+    }
+    return null;
+}
 
 // Parse JSON body from request
 function parseBody(req) {
@@ -91,7 +167,7 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = [], datado
     const timestamp = new Date().toISOString();
 
     // Build default URLs if not provided
-    const ddBaseUrl = 'https://app.datadoghq.com';
+    const ddBaseUrl = DD_APP_URL;
     const nowTs = Math.floor(Date.now() / 1000) * 1000;
     const thirtyMinAgo = nowTs - (30 * 60 * 1000);
 
@@ -154,11 +230,18 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = [], datado
         `| Tags | ${tags.join(', ') || 'N/A'} |\n\n` +
         quickLinksMarkdown;
 
+    // Truncate notebook name to fit within 80 char limit
+    // Format: "[Incident Report] {name} - YYYY-MM-DD" = 18 + name + 13 = 31 + name
+    const maxNameLen = 80 - 31; // 49 chars for monitor name
+    const truncatedName = monitorName.length > maxNameLen
+        ? monitorName.substring(0, maxNameLen - 3) + '...'
+        : monitorName;
+
     const notebookData = {
         data: {
             type: "notebooks",
             attributes: {
-                name: `[Incident Report] ${monitorName} - ${timestamp.split('T')[0]}`,
+                name: `[Incident Report] ${truncatedName} - ${timestamp.split('T')[0]}`,
                 cells: [
                     // Header cell with hyperlinks
                     {
@@ -302,7 +385,7 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = [], datado
 
         if (response.status === 200 || response.status === 201) {
             const notebookId = response.data?.data?.id;
-            const notebookUrl = `${DD_API_URL.replace('api.', 'app.')}/notebook/${notebookId}`;
+            const notebookUrl = `${DD_APP_URL}/notebook/${notebookId}`;
             console.log(`[Notebook] Created successfully: ${notebookUrl}`);
             return { id: notebookId, url: notebookUrl };
         } else {
@@ -487,12 +570,27 @@ function loadIncidentTemplate(templateId) {
     return null;
 }
 
-// Invoke Claude Code CLI with a prompt
-function invokeClaudeCode(prompt, workDir = WORK_DIR) {
+// Invoke Claude using either CLI (token) or SDK (API key)
+async function invokeClaudeCode(prompt, workDir = WORK_DIR) {
+    const authMethod = getAuthMethod();
+
+    console.log(`[Claude] Auth method: ${authMethod || 'none'}`);
+
+    if (authMethod === 'token') {
+        return invokeClaudeCodeCLI(prompt, workDir);
+    } else if (authMethod === 'apikey') {
+        return invokeClaudeCodeSDK(prompt);
+    } else {
+        throw new Error('No valid Claude authentication. Set ANTHROPIC_API_KEY or provide credentials.json via claude login');
+    }
+}
+
+// Original CLI approach (uses OAuth token from credentials.json)
+function invokeClaudeCodeCLI(prompt, workDir = WORK_DIR) {
     return new Promise((resolve, reject) => {
         const args = ['--print', prompt];
 
-        console.log(`[Claude] Invoking with prompt: ${prompt.substring(0, 100)}...`);
+        console.log(`[Claude CLI] Invoking with prompt: ${prompt.substring(0, 100)}...`);
 
         const claude = spawn('claude', args, {
             cwd: workDir,
@@ -512,22 +610,51 @@ function invokeClaudeCode(prompt, workDir = WORK_DIR) {
 
         claude.stderr.on('data', data => {
             stderr += data.toString();
-            console.error(`[Claude stderr] ${data.toString()}`);
+            console.error(`[Claude CLI stderr] ${data.toString()}`);
         });
 
         claude.on('close', code => {
-            console.log(`[Claude] Exited with code ${code}`);
+            console.log(`[Claude CLI] Exited with code ${code}`);
             if (code === 0) {
                 resolve(stdout);
             } else {
-                reject(new Error(`Claude exited with code ${code}: ${stderr}`));
+                reject(new Error(`Claude CLI exited with code ${code}: ${stderr}`));
             }
         });
 
         claude.on('error', err => {
-            reject(new Error(`Failed to spawn Claude: ${err.message}`));
+            reject(new Error(`Failed to spawn Claude CLI: ${err.message}`));
         });
     });
+}
+
+// SDK approach (uses API key)
+async function invokeClaudeCodeSDK(prompt) {
+    console.log(`[Claude SDK] Invoking with prompt: ${prompt.substring(0, 100)}...`);
+
+    try {
+        // Dynamic import of Anthropic SDK
+        const Anthropic = require('@anthropic-ai/sdk');
+        const anthropic = new Anthropic.default({ apiKey: ANTHROPIC_API_KEY });
+
+        const message = await anthropic.messages.create({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 8192,
+            messages: [{ role: "user", content: prompt }]
+        });
+
+        console.log(`[Claude SDK] Response received, ${message.content.length} content blocks`);
+
+        // Extract text from response
+        const textContent = message.content.find(c => c.type === 'text');
+        if (textContent) {
+            return textContent.text;
+        }
+        return JSON.stringify(message.content);
+    } catch (err) {
+        console.error(`[Claude SDK] Error: ${err.message}`);
+        throw new Error(`Claude SDK error: ${err.message}`);
+    }
 }
 
 // Load template from assets
@@ -566,8 +693,8 @@ const server = http.createServer(async (req, res) => {
 
             // Support both new format (payload object) and legacy format
             const fullPayload = payload || body;
-            const monitorId = fullPayload.monitor_id || fullPayload.monitorId;
-            const monitorName = fullPayload.monitor_name || fullPayload.monitorName;
+            let monitorId = fullPayload.monitor_id || fullPayload.monitorId;
+            let monitorName = fullPayload.monitor_name || fullPayload.monitorName;
             const alertStatus = fullPayload.alert_status || fullPayload.alertStatus;
             const scope = fullPayload.scope;
             const tags = fullPayload.tags;
@@ -575,10 +702,38 @@ const server = http.createServer(async (req, res) => {
             const service = fullPayload.service;
             const applicationTeam = fullPayload.APPLICATION_TEAM || fullPayload.application_team;
 
-            if (!monitorId || !monitorName) {
-                sendJson(res, 400, { error: 'monitorId and monitorName are required in payload' });
+            // Try to extract monitor ID from DETAILED_DESCRIPTION URL if not provided
+            if (!monitorId && fullPayload.DETAILED_DESCRIPTION) {
+                const match = fullPayload.DETAILED_DESCRIPTION.match(/monitors\/(\d+)/);
+                if (match) {
+                    monitorId = parseInt(match[1], 10);
+                    console.log(`[Analyze] Extracted monitor ID from description: ${monitorId}`);
+                }
+            }
+
+            // Fallback for test webhooks: use timestamp as unique ID
+            if (!monitorId) {
+                monitorId = Date.now();
+                console.log(`[Analyze] Using generated ID for test webhook: ${monitorId}`);
+            }
+
+            // Fallback for monitor name from ALERT_TITLE
+            if (!monitorName) {
+                monitorName = fullPayload.ALERT_TITLE || fullPayload.alert_title || 'Unknown Monitor';
+            }
+
+            if (!monitorName) {
+                sendJson(res, 400, { error: 'monitorName is required in payload' });
                 return;
             }
+
+            // Update fullPayload with resolved values (needed for createDatadogNotebook)
+            fullPayload.monitor_id = monitorId;
+            fullPayload.monitor_name = monitorName;
+
+            // Send desktop notification (same as webhook receive endpoint)
+            console.log(`[Analyze] Sending desktop notification for: ${monitorName}`);
+            await sendDesktopNotification(fullPayload);
 
             // Load incident report template (JSON format)
             const incidentTemplate = template_id ? loadIncidentTemplate(template_id) : null;
@@ -610,7 +765,7 @@ const server = http.createServer(async (req, res) => {
             console.log(`[Analyze] Pre-fetching Datadog data for analysis...`);
 
             // Datadog URL builder helper
-            const ddBaseUrl = 'https://app.datadoghq.com';
+            const ddBaseUrl = DD_APP_URL;
             const nowTs = Math.floor(Date.now() / 1000) * 1000;
             const thirtyMinAgo = nowTs - (30 * 60 * 1000);
 

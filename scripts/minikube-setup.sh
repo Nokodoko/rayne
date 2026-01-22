@@ -2,8 +2,13 @@
 
 # Rayne Minikube Setup Script
 # This script sets up the Rayne application in a local minikube cluster
+# All configuration is done through interactive gum prompts
 
 set -e
+
+# Resolve absolute path to script directory (works even after cd commands)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 #=============================================================================
 # COLORS & STYLING
@@ -14,41 +19,23 @@ greenColor() { gum style --foreground "#00FF00" "$1"; }
 purpleColor() { gum style --foreground "#9400D3" "$1"; }
 
 #=============================================================================
-# USAGE/HELP
+# CHECK DEPENDENCIES
 #=============================================================================
-show_usage() {
-    cat << EOF
-Rayne Minikube Setup Script
+if ! command -v gum &> /dev/null; then
+    echo "Error: gum is not installed"
+    echo "Install gum: https://github.com/charmbracelet/gum"
+    exit 1
+fi
 
-USAGE:
-    $(basename "$0") [OPTIONS]
+if ! command -v minikube &> /dev/null; then
+    echo "Error: minikube is not installed. Please install minikube first."
+    exit 1
+fi
 
-OPTIONS:
-    -a, --api-key KEY      DD_API_KEY for sub-agent (incident reports)
-    -p, --app-key KEY      DD_APP_KEY for sub-agent (incident reports)
-    -s, --site SITE        Datadog site: 'com' (commercial) or 'gov' (government)
-    -r, --rayne-keys MODE  Rayne service keys: 'default' or 'same' (as sub-agent)
-    -h, --help             Show this help message
-
-EXAMPLES:
-    # Interactive mode (gum prompts)
-    $(basename "$0")
-
-    # Direct invocation with flags
-    $(basename "$0") -a "your-api-key" -p "your-app-key" -s gov -r same
-
-    # Commercial site with default Rayne keys
-    $(basename "$0") -a "api-key" -p "app-key" -s com -r default
-
-NOTES:
-    - If no flags provided, interactive gum prompts will guide configuration
-    - Sub-agent keys are used for dd_lib access and incident report creation
-    - Rayne keys are used for APM, DBM, and log collection
-    - 'default' Rayne keys use TF_VAR_ecco_dd_* environment variables
-    - 'same' Rayne keys use the same keys as the sub-agent
-
-EOF
-}
+if ! command -v kubectl &> /dev/null; then
+    echo "Error: kubectl is not installed. Please install kubectl first."
+    exit 1
+fi
 
 #=============================================================================
 # DEFAULTS
@@ -56,112 +43,164 @@ EOF
 SUBAGENT_API_KEY=""
 SUBAGENT_APP_KEY=""
 SUBAGENT_SITE="datadoghq.com"
+RAYNE_SITE="datadoghq.com"
+RAYNE_API_KEY=""
+RAYNE_APP_KEY=""
 RAYNE_KEY_MODE="default"
+CLAUDE_AUTH_MODE=""
+ANTHROPIC_API_KEY_VALUE=""
+CLAUDE_CREDS_FILE=""
 
 #=============================================================================
-# PARSE FLAGS
+# INTERACTIVE SETUP (GUM PROMPTS)
 #=============================================================================
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -a|--api-key)
-            SUBAGENT_API_KEY="$2"
-            shift 2
-            ;;
-        -p|--app-key)
-            SUBAGENT_APP_KEY="$2"
-            shift 2
-            ;;
-        -s|--site)
-            if [ "$2" = "gov" ]; then
-                SUBAGENT_SITE="ddog-gov.com"
-            else
-                SUBAGENT_SITE="datadoghq.com"
-            fi
-            shift 2
-            ;;
-        -r|--rayne-keys)
-            RAYNE_KEY_MODE="$2"
-            shift 2
-            ;;
-        -h|--help)
-            show_usage
-            exit 0
-            ;;
-        *)
-            echo "Unknown option: $1"
-            show_usage
-            exit 1
-            ;;
-    esac
-done
+gum style \
+    --border double \
+    --padding "1" \
+    --border-foreground "#9400D3" \
+    "Rayne Minikube Setup"
 
-#=============================================================================
-# INTERACTIVE MODE (GUM PROMPTS)
-#=============================================================================
-if [ -z "$SUBAGENT_API_KEY" ] || [ -z "$SUBAGENT_APP_KEY" ]; then
-    # Check if gum is installed
-    if ! command -v gum &> /dev/null; then
-        echo "Error: gum is not installed and no flags provided"
-        echo "Install gum: https://github.com/charmbracelet/gum"
-        echo "Or use flags: $(basename "$0") -h"
-        exit 1
-    fi
-
-    gum style \
-        --border double \
-        --padding "1" \
-        --border-foreground "#9400D3" \
-        "Rayne Minikube Setup"
-
-    echo ""
-    echo "$(purpleColor "Step 1:") Choose Datadog $(redColor "domain")"
-    SITE_CHOICE=$(gum choose "Commercial (app.datadoghq.com)" "Government (app.ddog-gov.com)")
-    if [[ "$SITE_CHOICE" == *"Government"* ]]; then
-        SUBAGENT_SITE="ddog-gov.com"
-    else
-        SUBAGENT_SITE="datadoghq.com"
-    fi
-    echo "  Selected: $(greenColor "$SUBAGENT_SITE")"
-
-    echo ""
-    echo "$(purpleColor "Step 2:") Choose $(redColor "API Key") source for $(capColor "Sub-Agent")"
-
-    # Discover environment variables containing DD_API_KEY and build list
-    API_KEY_LIST=$(printf "Enter Manually\n"; env | grep -i "DD_API_KEY\|DD_API\|API_KEY" | grep -v "^_" | cut -d= -f1 | sort -u)
-
-    API_KEY_CHOICE=$(echo "$API_KEY_LIST" | gum filter --placeholder "Search API key env vars...")
-    if [ "$API_KEY_CHOICE" = "Enter Manually" ]; then
-        SUBAGENT_API_KEY=$(gum input --placeholder "Enter DD_API_KEY" --password)
-    else
-        SUBAGENT_API_KEY="${!API_KEY_CHOICE}"
-        echo "  Using: $(greenColor "$API_KEY_CHOICE")"
-    fi
-
-    echo ""
-    echo "$(purpleColor "Step 3:") Choose $(redColor "APP Key") source for $(capColor "Sub-Agent")"
-
-    # Discover environment variables containing DD_APP_KEY and build list
-    APP_KEY_LIST=$(printf "Enter Manually\n"; env | grep -i "DD_APP_KEY\|DD_APP\|APP_KEY" | grep -v "^_" | cut -d= -f1 | sort -u)
-
-    APP_KEY_CHOICE=$(echo "$APP_KEY_LIST" | gum filter --placeholder "Search APP key env vars...")
-    if [ "$APP_KEY_CHOICE" = "Enter Manually" ]; then
-        SUBAGENT_APP_KEY=$(gum input --placeholder "Enter DD_APP_KEY" --password)
-    else
-        SUBAGENT_APP_KEY="${!APP_KEY_CHOICE}"
-        echo "  Using: $(greenColor "$APP_KEY_CHOICE")"
-    fi
-
-    echo ""
-    echo "$(purpleColor "Step 4:") Choose $(redColor "Rayne Service") key configuration"
-    RAYNE_CHOICE=$(gum choose "Default (use TF_VAR_ecco_dd_* keys)" "Same as Sub-Agent (use keys from above)")
-    if [[ "$RAYNE_CHOICE" == *"Same"* ]]; then
-        RAYNE_KEY_MODE="same"
-    else
-        RAYNE_KEY_MODE="default"
-    fi
-    echo "  Selected: $(greenColor "$RAYNE_KEY_MODE")"
-    echo ""
+#-----------------------------------------------------------------------------
+# SUB-AGENT CONFIGURATION
+# The Sub-Agent creates incident report notebooks and queries logs for RCA.
+# Required APP KEY scopes: notebooks_write, logs_read_data, monitors_read
+#-----------------------------------------------------------------------------
+echo ""
+gum style --faint "Sub-Agent: Creates incident notebooks & queries logs for RCA"
+gum style --faint "Required APP_KEY scopes: notebooks_write, logs_read_data, monitors_read"
+echo ""
+echo "$(purpleColor "Step 1:") Choose Datadog $(redColor "domain") for $(capColor "Sub-Agent")"
+SITE_CHOICE=$(gum choose "Commercial (app.datadoghq.com)" "Government (app.ddog-gov.com)")
+if [[ "$SITE_CHOICE" == *"Government"* ]]; then
+    SUBAGENT_SITE="ddog-gov.com"
+else
+    SUBAGENT_SITE="datadoghq.com"
 fi
+echo "  Selected: $(greenColor "$SUBAGENT_SITE")"
+
+echo ""
+echo "$(purpleColor "Step 2:") Choose $(redColor "API Key") source for $(capColor "Sub-Agent")"
+gum style --faint "  API Key: Used for authentication (any valid key for this org)"
+API_KEY_LIST=$(printf "Enter Manually\n"; env | grep -i "DD_API_KEY\|DD_API\|API_KEY" | grep -v "^_" | cut -d= -f1 | sort -u)
+API_KEY_CHOICE=$(echo "$API_KEY_LIST" | gum filter --placeholder "Search API key env vars...")
+if [ "$API_KEY_CHOICE" = "Enter Manually" ]; then
+    SUBAGENT_API_KEY=$(gum input --placeholder "Enter DD_API_KEY" --password)
+else
+    SUBAGENT_API_KEY="${!API_KEY_CHOICE}"
+    echo "  Using: $(greenColor "$API_KEY_CHOICE")"
+fi
+
+echo ""
+echo "$(purpleColor "Step 3:") Choose $(redColor "APP Key") source for $(capColor "Sub-Agent")"
+gum style --faint "  APP Key MUST have scopes: notebooks_write, logs_read_data, monitors_read"
+gum style --faint "  Check scopes at: https://app.${SUBAGENT_SITE}/organization-settings/application-keys"
+APP_KEY_LIST=$(printf "Enter Manually\n"; env | grep -i "DD_APP_KEY\|DD_APP\|APP_KEY" | grep -v "^_" | cut -d= -f1 | sort -u)
+APP_KEY_CHOICE=$(echo "$APP_KEY_LIST" | gum filter --placeholder "Search APP key env vars...")
+if [ "$APP_KEY_CHOICE" = "Enter Manually" ]; then
+    SUBAGENT_APP_KEY=$(gum input --placeholder "Enter DD_APP_KEY" --password)
+else
+    SUBAGENT_APP_KEY="${!APP_KEY_CHOICE}"
+    echo "  Using: $(greenColor "$APP_KEY_CHOICE")"
+fi
+
+#-----------------------------------------------------------------------------
+# RAYNE SERVICE CONFIGURATION
+# Rayne sends APM traces, DBM queries, and logs to Datadog via the Agent.
+# Required APP KEY scopes: apm_read (optional), logs_read_data (optional)
+# The Datadog Agent uses these keys - standard permissions are usually sufficient.
+#-----------------------------------------------------------------------------
+echo ""
+gum style --faint "Rayne Service: Sends APM traces, DBM queries, and logs to Datadog"
+gum style --faint "Standard API/APP key permissions are sufficient (used by Datadog Agent)"
+echo ""
+echo "$(purpleColor "Step 4:") Choose $(redColor "Rayne Service") key configuration"
+RAYNE_CHOICE=$(gum choose "Default (use TF_VAR_ecco_dd_* keys)" "Same as Sub-Agent (use keys from above)" "Select Different Keys")
+if [[ "$RAYNE_CHOICE" == *"Same"* ]]; then
+    RAYNE_KEY_MODE="same"
+elif [[ "$RAYNE_CHOICE" == *"Different"* ]]; then
+    RAYNE_KEY_MODE="custom"
+
+    echo ""
+    echo "$(purpleColor "Step 4a:") Choose $(redColor "API Key") for $(capColor "Rayne Service")"
+    gum style --faint "  API Key: Used by Datadog Agent for data ingestion"
+    RAYNE_API_KEY_LIST=$(printf "Enter Manually\n"; env | grep -i "DD_API_KEY\|DD_API\|API_KEY" | grep -v "^_" | cut -d= -f1 | sort -u)
+    RAYNE_API_KEY_CHOICE=$(echo "$RAYNE_API_KEY_LIST" | gum filter --placeholder "Search API key env vars...")
+    if [ "$RAYNE_API_KEY_CHOICE" = "Enter Manually" ]; then
+        RAYNE_API_KEY=$(gum input --placeholder "Enter Rayne DD_API_KEY" --password)
+    else
+        RAYNE_API_KEY="${!RAYNE_API_KEY_CHOICE}"
+        echo "  Using: $(greenColor "$RAYNE_API_KEY_CHOICE")"
+    fi
+
+    echo ""
+    echo "$(purpleColor "Step 4b:") Choose $(redColor "APP Key") for $(capColor "Rayne Service")"
+    gum style --faint "  APP Key: Used by Datadog Agent (standard permissions OK)"
+    RAYNE_APP_KEY_LIST=$(printf "Enter Manually\n"; env | grep -i "DD_APP_KEY\|DD_APP\|APP_KEY" | grep -v "^_" | cut -d= -f1 | sort -u)
+    RAYNE_APP_KEY_CHOICE=$(echo "$RAYNE_APP_KEY_LIST" | gum filter --placeholder "Search APP key env vars...")
+    if [ "$RAYNE_APP_KEY_CHOICE" = "Enter Manually" ]; then
+        RAYNE_APP_KEY=$(gum input --placeholder "Enter Rayne DD_APP_KEY" --password)
+    else
+        RAYNE_APP_KEY="${!RAYNE_APP_KEY_CHOICE}"
+        echo "  Using: $(greenColor "$RAYNE_APP_KEY_CHOICE")"
+    fi
+else
+    RAYNE_KEY_MODE="default"
+fi
+echo "  Selected: $(greenColor "$RAYNE_KEY_MODE")"
+
+echo ""
+echo "$(purpleColor "Step 5:") Choose $(redColor "Rayne Service") site for APM/DBM/logs"
+RAYNE_SITE_CHOICE=$(gum choose "Same as Sub-Agent ($SUBAGENT_SITE)" "Commercial (datadoghq.com)" "Government (ddog-gov.com)")
+if [[ "$RAYNE_SITE_CHOICE" == *"Same"* ]]; then
+    RAYNE_SITE="$SUBAGENT_SITE"
+elif [[ "$RAYNE_SITE_CHOICE" == *"Government"* ]]; then
+    RAYNE_SITE="ddog-gov.com"
+else
+    RAYNE_SITE="datadoghq.com"
+fi
+echo "  Selected: $(greenColor "$RAYNE_SITE")"
+
+echo ""
+echo "$(purpleColor "Step 6:") Configure $(redColor "Claude Authentication")"
+CLAUDE_AUTH_CHOICE=$(gum choose \
+    "Use existing token (~/.claude/.credentials.json)" \
+    "Generate new token (run 'claude login')" \
+    "Use API key (ANTHROPIC_API_KEY env var)")
+
+case "$CLAUDE_AUTH_CHOICE" in
+    *"existing token"*)
+        CLAUDE_CREDS_FILE="$HOME/.claude/.credentials.json"
+        if [ ! -f "$CLAUDE_CREDS_FILE" ]; then
+            echo "$(redColor "Error:") Credentials file not found at $CLAUDE_CREDS_FILE"
+            echo "Run 'claude login' first or choose another option"
+            exit 1
+        fi
+        CLAUDE_AUTH_MODE="token"
+        echo "  Using: $(greenColor "OAuth token from $CLAUDE_CREDS_FILE")"
+        ;;
+    *"Generate new"*)
+        echo "Opening Claude login..."
+        claude login
+        CLAUDE_CREDS_FILE="$HOME/.claude/.credentials.json"
+        if [ ! -f "$CLAUDE_CREDS_FILE" ]; then
+            echo "$(redColor "Error:") Login failed - credentials file not created"
+            exit 1
+        fi
+        CLAUDE_AUTH_MODE="token"
+        echo "  Generated: $(greenColor "New OAuth token")"
+        ;;
+    *"API key"*)
+        ANTHROPIC_KEY_LIST=$(printf "Enter Manually\n"; env | grep -i "ANTHROPIC" | cut -d= -f1 | sort -u)
+        ANTHROPIC_KEY_CHOICE=$(echo "$ANTHROPIC_KEY_LIST" | gum filter --placeholder "Search ANTHROPIC env vars...")
+        if [ "$ANTHROPIC_KEY_CHOICE" = "Enter Manually" ]; then
+            ANTHROPIC_API_KEY_VALUE=$(gum input --placeholder "Enter ANTHROPIC_API_KEY" --password)
+        else
+            ANTHROPIC_API_KEY_VALUE="${!ANTHROPIC_KEY_CHOICE}"
+            echo "  Using: $(greenColor "$ANTHROPIC_KEY_CHOICE")"
+        fi
+        CLAUDE_AUTH_MODE="apikey"
+        ;;
+esac
 
 #=============================================================================
 # SET RAYNE KEYS BASED ON MODE
@@ -169,18 +208,21 @@ fi
 if [ "$RAYNE_KEY_MODE" = "same" ]; then
     RAYNE_API_KEY="$SUBAGENT_API_KEY"
     RAYNE_APP_KEY="$SUBAGENT_APP_KEY"
+elif [ "$RAYNE_KEY_MODE" = "custom" ]; then
+    if [ -z "$RAYNE_API_KEY" ] || [ -z "$RAYNE_APP_KEY" ]; then
+        echo "Error: Rayne keys not set in custom mode"
+        exit 1
+    fi
 else
     # Default mode - use TF_VAR_ecco_dd_* keys
     if [ -z "$TF_VAR_ecco_dd_api_key" ]; then
         echo "Error: TF_VAR_ecco_dd_api_key not set (required for 'default' Rayne key mode)"
         echo "Set it: export TF_VAR_ecco_dd_api_key=your-api-key"
-        echo "Or use: $(basename "$0") -r same"
         exit 1
     fi
     if [ -z "$TF_VAR_ecco_dd_app_key" ]; then
         echo "Error: TF_VAR_ecco_dd_app_key not set (required for 'default' Rayne key mode)"
         echo "Set it: export TF_VAR_ecco_dd_app_key=your-app-key"
-        echo "Or use: $(basename "$0") -r same"
         exit 1
     fi
     RAYNE_API_KEY="$TF_VAR_ecco_dd_api_key"
@@ -190,33 +232,35 @@ fi
 #=============================================================================
 # DISPLAY CONFIGURATION
 #=============================================================================
+echo ""
 echo "=== Rayne Minikube Setup ==="
 echo ""
 echo "Configuration:"
 echo "  Sub-Agent Site:     $SUBAGENT_SITE"
 echo "  Sub-Agent API Key:  ${SUBAGENT_API_KEY:0:8}..."
 echo "  Sub-Agent APP Key:  ${SUBAGENT_APP_KEY:0:8}..."
+echo "  Rayne Site:         $RAYNE_SITE"
 echo "  Rayne Key Mode:     $RAYNE_KEY_MODE"
 echo "  Rayne API Key:      ${RAYNE_API_KEY:0:8}..."
 echo "  Rayne APP Key:      ${RAYNE_APP_KEY:0:8}..."
+echo "  Claude Auth Mode:   $CLAUDE_AUTH_MODE"
+if [ "$CLAUDE_AUTH_MODE" = "token" ]; then
+    echo "  Claude Creds:       $CLAUDE_CREDS_FILE"
+elif [ "$CLAUDE_AUTH_MODE" = "apikey" ]; then
+    echo "  Anthropic Key:      ${ANTHROPIC_API_KEY_VALUE:0:8}..."
+fi
+echo ""
+gum style --foreground "#FFA500" --bold "Key Permission Reminder:"
+gum style --faint "  Sub-Agent APP Key needs: notebooks_write, logs_read_data, monitors_read"
+gum style --faint "  If you get 403 errors creating notebooks, check APP Key scopes at:"
+gum style --faint "  https://app.${SUBAGENT_SITE}/organization-settings/application-keys"
 echo ""
 
-# Check if minikube is installed
-if ! command -v minikube &> /dev/null; then
-    echo "Error: minikube is not installed. Please install minikube first."
-    exit 1
-fi
-
-# Check if kubectl is installed
-if ! command -v kubectl &> /dev/null; then
-    echo "Error: kubectl is not installed. Please install kubectl first."
-    exit 1
-fi
-
-# Start minikube if not running
+#=============================================================================
+# START MINIKUBE
+#=============================================================================
 if ! minikube status &> /dev/null; then
     echo "Starting minikube..."
-    # Increased memory for Ollama + Qdrant + Rayne + PostgreSQL + Datadog Agent
     minikube start --driver=docker --cpus=4 --memory=12288
 else
     echo "Minikube is already running"
@@ -224,19 +268,19 @@ else
     echo "Restart with: minikube delete && minikube start --cpus=4 --memory=12288"
 fi
 
-# Build the Docker image locally using buildx
+#=============================================================================
+# BUILD DOCKER IMAGES
+#=============================================================================
 echo ""
 echo "Building Rayne Docker image..."
-cd "$(dirname "$0")/../mkii_ddog_server"
+cd "$PROJECT_DIR/mkii_ddog_server"
 DOCKER_BUILDKIT=1 docker build -t rayne:latest .
 
-# Build the Claude Agent sidecar image
 echo ""
 echo "Building Claude Agent Docker image..."
-cd "$(dirname "$0")/.."
+cd "$PROJECT_DIR"
 DOCKER_BUILDKIT=1 docker build -t claude-agent:latest -f docker/claude-agent/Dockerfile .
 
-# Load images into minikube (works for both single and multi-node)
 echo ""
 echo "Loading images into minikube..."
 minikube image load rayne:latest
@@ -244,12 +288,13 @@ minikube image load claude-agent:latest
 
 export IMAGE_NAME="rayne:latest"
 
-# Apply Kubernetes manifests
+#=============================================================================
+# APPLY KUBERNETES MANIFESTS
+#=============================================================================
 echo ""
 echo "Applying Kubernetes manifests..."
-cd "$(dirname "$0")/../k8s"
+cd "$PROJECT_DIR/k8s"
 
-# Apply in order
 kubectl apply -f postgres-deployment.yaml
 echo "Waiting for PostgreSQL pod to be created..."
 sleep 5
@@ -260,7 +305,9 @@ done
 echo "Waiting for PostgreSQL to be ready..."
 kubectl wait --for=condition=ready pod -l app=postgres --timeout=120s
 
-# Create subagent-datadog-secrets (for Claude agent sidecar - incident reports)
+#=============================================================================
+# CREATE SECRETS
+#=============================================================================
 echo "Creating Sub-Agent Datadog secrets..."
 kubectl create secret generic subagent-datadog-secrets \
     --from-literal=api-key="$SUBAGENT_API_KEY" \
@@ -268,35 +315,40 @@ kubectl create secret generic subagent-datadog-secrets \
     --from-literal=site="$SUBAGENT_SITE" \
     --dry-run=client -o yaml | kubectl apply -f -
 
-# Create datadog-secrets (for Rayne service - APM, DBM, logs)
 echo "Creating Rayne Datadog secrets..."
 kubectl create secret generic datadog-secrets \
     --from-literal=api-key="$RAYNE_API_KEY" \
     --from-literal=app-key="$RAYNE_APP_KEY" \
     --dry-run=client -o yaml | kubectl apply -f -
 
-# Create Anthropic secrets for Claude Agent
 echo ""
-echo "Creating Anthropic secrets..."
-if [ -z "$ANTHROPIC_API_KEY" ]; then
-    echo "Warning: ANTHROPIC_API_KEY not set. Claude Agent will not function."
-    echo "Set it with: export ANTHROPIC_API_KEY=your-key"
-    kubectl create secret generic anthropic-secrets \
-        --from-literal=api-key="placeholder-key" \
+echo "Creating Claude authentication secrets..."
+if [ "$CLAUDE_AUTH_MODE" = "token" ]; then
+    kubectl create secret generic claude-credentials \
+        --from-file=credentials.json="$CLAUDE_CREDS_FILE" \
         --dry-run=client -o yaml | kubectl apply -f -
-else
+    echo "✓ Claude OAuth credentials configured from $CLAUDE_CREDS_FILE"
+    # Delete anthropic-secrets if exists (so ANTHROPIC_API_KEY won't be set)
+    kubectl delete secret anthropic-secrets 2>/dev/null || true
+elif [ "$CLAUDE_AUTH_MODE" = "apikey" ]; then
     kubectl create secret generic anthropic-secrets \
-        --from-literal=api-key="$ANTHROPIC_API_KEY" \
+        --from-literal=api-key="$ANTHROPIC_API_KEY_VALUE" \
         --dry-run=client -o yaml | kubectl apply -f -
     echo "✓ Anthropic API key configured"
+    echo '{}' > /tmp/placeholder-credentials.json
+    kubectl create secret generic claude-credentials \
+        --from-file=credentials.json=/tmp/placeholder-credentials.json \
+        --dry-run=client -o yaml | kubectl apply -f -
+    rm /tmp/placeholder-credentials.json
 fi
 
-# Apply assets ConfigMap
+#=============================================================================
+# DEPLOY SUPPORTING SERVICES
+#=============================================================================
 echo ""
 echo "Applying assets ConfigMap..."
 kubectl apply -f assets-configmap.yaml
 
-# Deploy Qdrant vector DB
 echo ""
 echo "=== Deploying Qdrant Vector DB ==="
 kubectl apply -f qdrant-deployment.yaml
@@ -304,7 +356,6 @@ echo "Waiting for Qdrant to be ready..."
 kubectl wait --for=condition=ready pod -l app=qdrant --timeout=120s 2>/dev/null || \
     echo "  Note: Qdrant pod may still be starting..."
 
-# Deploy Ollama for embeddings
 echo ""
 echo "=== Deploying Ollama (Gemma 2B) ==="
 kubectl apply -f ollama-deployment.yaml
@@ -313,49 +364,47 @@ echo "This may take several minutes..."
 kubectl wait --for=condition=ready pod -l app=ollama --timeout=300s 2>/dev/null || \
     echo "  Note: Ollama pod may still be downloading the model..."
 
-# Install Datadog Agent FIRST (before Rayne) so the service is available
+#=============================================================================
+# INSTALL DATADOG AGENT
+#=============================================================================
 echo ""
 echo "=== Installing Datadog Agent ==="
 
-# Check if helm is installed
 if ! command -v helm &> /dev/null; then
     echo "Warning: helm is not installed. Skipping Datadog Agent installation."
     echo "To install helm: https://helm.sh/docs/intro/install/"
     echo "APM tracing will not work without the Datadog Agent."
 else
-    # Add Datadog Helm repository
     echo "Adding Datadog Helm repository..."
     helm repo add datadog https://helm.datadoghq.com 2>/dev/null || true
     helm repo update
 
-    # Check if datadog-agent is already installed
     if helm list | grep -q datadog-agent; then
         echo "Upgrading existing Datadog Agent..."
         helm upgrade datadog-agent datadog/datadog \
             --set datadog.apiKey="$RAYNE_API_KEY" \
             --set datadog.appKey="$RAYNE_APP_KEY" \
             --set datadog.clusterName=rayne \
-            --set datadog.site=datadoghq.com \
+            --set datadog.site="$RAYNE_SITE" \
             --set agents.enabled=true \
             --set clusterAgent.enabled=true \
-            -f "$(dirname "$0")/../helm/values.yaml"
+            -f "$PROJECT_DIR/helm/values.yaml"
     else
         echo "Installing Datadog Agent..."
         helm install datadog-agent datadog/datadog \
             --set datadog.apiKey="$RAYNE_API_KEY" \
             --set datadog.appKey="$RAYNE_APP_KEY" \
             --set datadog.clusterName=rayne \
-            --set datadog.site=datadoghq.com \
+            --set datadog.site="$RAYNE_SITE" \
             --set agents.enabled=true \
             --set clusterAgent.enabled=true \
-            -f "$(dirname "$0")/../helm/values.yaml"
+            -f "$PROJECT_DIR/helm/values.yaml"
     fi
 
     echo "Waiting for Datadog Agent to be ready..."
     kubectl wait --for=condition=ready pod -l app=datadog-agent --timeout=180s 2>/dev/null || \
         echo "  Note: Datadog Agent pods may still be starting..."
 
-    # Wait for the datadog-agent service to be available
     echo "Waiting for Datadog Agent service to be available..."
     until kubectl get svc datadog-agent 2>/dev/null | grep -q datadog-agent; do
         echo "  Waiting for datadog-agent service..."
@@ -363,7 +412,6 @@ else
     done
     echo "✓ Datadog Agent service is available"
 
-    # Wait for agent to actually respond on port 8126
     echo "Waiting for Datadog Agent APM endpoint to be ready..."
     AGENT_READY=false
     for i in $(seq 1 30); do
@@ -382,7 +430,9 @@ else
     fi
 fi
 
-# Now deploy Rayne (after Datadog Agent is ready)
+#=============================================================================
+# DEPLOY RAYNE
+#=============================================================================
 echo ""
 echo "=== Deploying Rayne ==="
 kubectl apply -f rayne-deployment.yaml
@@ -396,7 +446,9 @@ done
 echo "Waiting for Rayne to be ready..."
 kubectl wait --for=condition=ready pod -l app=rayne --timeout=120s
 
-# Get service URL
+#=============================================================================
+# DEPLOYMENT COMPLETE
+#=============================================================================
 echo ""
 echo "=== Deployment Complete ==="
 echo ""
@@ -488,7 +540,9 @@ echo "Access PostgreSQL:"
 echo "  kubectl exec -it \$(kubectl get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}') -- psql -U rayne -d rayne"
 echo ""
 
-# Verify server is responding
+#=============================================================================
+# VERIFY DEPLOYMENT
+#=============================================================================
 echo "=== Verifying Server Health ==="
 echo ""
 MAX_RETRIES=10
@@ -530,11 +584,9 @@ fi
 
 echo ""
 echo "=== Verifying APM Trace Connectivity ==="
-# Generate a request to trigger tracer initialization
 curl -s "$RAYNE_URL/health" > /dev/null 2>&1
 sleep 3
 
-# Check for trace errors in Rayne logs
 if kubectl logs -l app=rayne --tail=50 2>&1 | grep -q "Datadog APM tracer started"; then
     echo "✓ APM tracer started successfully"
     kubectl logs -l app=rayne --tail=50 2>&1 | grep "Datadog APM tracer started"

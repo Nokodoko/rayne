@@ -235,10 +235,9 @@ datadog:
     autoMultiLineDetection: true
 
   # APM configuration
+  # Note: 'enabled' and 'socketEnabled' are deprecated, using portEnabled instead
   apm:
-    socketEnabled: true
     portEnabled: true
-    enabled: true
     port: 8126
     useSocketVolume: false
     socketPath: /var/run/datadog/apm.socket
@@ -307,7 +306,6 @@ datadog:
     processCollection: false
     stripProcessArguments: false
     processDiscovery: true
-    runInCoreAgent: false
     containerCollection: true
 
   osReleasePath: /etc/os-release
@@ -452,7 +450,7 @@ clusterAgent:
   command: []
   token: ""
   tokenExistingSecret: ""
-  replicas: 1
+  replicas: 2  # HA mode required for Admission Controller
   revisionHistoryLimit: 10
 
   rbac:
