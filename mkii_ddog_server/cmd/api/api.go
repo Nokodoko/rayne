@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils"
+	"github.com/Nokodoko/mkii_ddog_server/services/agents"
 	"github.com/Nokodoko/mkii_ddog_server/services/catalog"
 	"github.com/Nokodoko/mkii_ddog_server/services/demo"
 	"github.com/Nokodoko/mkii_ddog_server/services/downtimes"
@@ -86,8 +89,9 @@ func traceMiddleware(next http.Handler) http.Handler {
 }
 
 type DDogServer struct {
-	addr string
-	db   *sql.DB
+	addr       string
+	db         *sql.DB
+	dispatcher *webhooks.Dispatcher
 }
 
 func NewDdogServer(addr string, db *sql.DB) *DDogServer {
@@ -97,7 +101,7 @@ func NewDdogServer(addr string, db *sql.DB) *DDogServer {
 	}
 }
 
-func (d *DDogServer) Run() error {
+func (d *DDogServer) Run(ctx context.Context) error {
 	router := http.NewServeMux()
 
 	// Initialize storages
@@ -105,19 +109,39 @@ func (d *DDogServer) Run() error {
 	webhookStorage := webhooks.NewStorage(d.db)
 	rumStorage := rum.NewStorage(d.db)
 
-	// Initialize webhook processor with registered processors
-	// Add or remove processors here to customize webhook handling
-	webhookProcessor := webhooks.NewProcessor(webhookStorage,
-		processors.NewDesktopNotifyProcessor(), // Desktop notifications
-		processors.NewForwardingProcessor(),    // Forward to configured URLs
-		processors.NewDowntimeProcessor(),      // Auto-create downtimes on recovery
-		processors.NewClaudeAgentProcessor(),   // AI-powered RCA analysis
-		// processors.NewSlackProcessor(),      // Uncomment to enable Slack (set SLACK_WEBHOOK_URL)
-	)
+	// Initialize agent orchestrator with bounded concurrency
+	agentOrchConfig := agents.DefaultOrchestratorConfig()
+	agentOrch := agents.NewAgentOrchestrator(agentOrchConfig)
+
+	// Register default Claude agent for all roles
+	defaultAgent := agents.NewDefaultClaudeAgent()
+	agentOrch.SetDefaultAgent(defaultAgent)
+
+	// Register specialist agents (they share the same Claude sidecar for now)
+	agentOrch.RegisterAgent(agents.NewClaudeAgent(agents.RoleInfrastructure))
+	agentOrch.RegisterAgent(agents.NewClaudeAgent(agents.RoleApplication))
+	agentOrch.RegisterAgent(agents.NewClaudeAgent(agents.RoleDatabase))
+	agentOrch.RegisterAgent(agents.NewClaudeAgent(agents.RoleNetwork))
+	agentOrch.RegisterAgent(agents.NewClaudeAgent(agents.RoleLogs))
+
+	// Initialize processor orchestrator with tiered execution
+	procOrch := webhooks.NewProcessorOrchestrator(webhookStorage, agentOrch)
+
+	// Register fast processors (Tier 1: parallel execution)
+	procOrch.RegisterFastProcessor(processors.NewDesktopNotifyProcessor())
+	procOrch.RegisterFastProcessor(processors.NewForwardingProcessor())
+	procOrch.RegisterFastProcessor(processors.NewDowntimeProcessor())
+	// Note: ClaudeAgentProcessor removed - agent analysis is now handled by Tier 2
+	// through the agent orchestrator for bounded concurrency
+
+	// Initialize dispatcher with worker pool
+	dispatcherConfig := webhooks.DefaultDispatcherConfig()
+	d.dispatcher = webhooks.NewDispatcher(procOrch, dispatcherConfig)
+	d.dispatcher.Start()
 
 	// Initialize handlers
 	userHandler := user.NewHandler(userStorage)
-	webhookHandler := webhooks.NewHandler(webhookStorage, webhookProcessor)
+	webhookHandler := webhooks.NewHandler(webhookStorage, d.dispatcher)
 	rumHandler := rum.NewHandler(rumStorage)
 	demoHandler := demo.NewHandler(webhookStorage, rumStorage)
 
@@ -166,6 +190,12 @@ func (d *DDogServer) Run() error {
 	utils.Endpoint(router, "GET", "/v1/webhooks/stats", webhookHandler.GetWebhookStats)
 	utils.Endpoint(router, "POST", "/v1/webhooks/reprocess", webhookHandler.ReprocessPending)
 	utils.Endpoint(router, "GET", "/v1/webhooks/processors", webhookHandler.ListProcessors)
+	utils.Endpoint(router, "GET", "/v1/webhooks/dispatcher/stats", webhookHandler.GetDispatcherStats)
+
+	// Agent orchestrator stats
+	utils.Endpoint(router, "GET", "/v1/agents/stats", func(w http.ResponseWriter, r *http.Request) (int, any) {
+		return http.StatusOK, agentOrch.Stats()
+	})
 
 	// RUM (Real User Monitoring)
 	utils.Endpoint(router, "POST", "/v1/rum/init", rumHandler.InitVisitor)
@@ -215,6 +245,8 @@ func (d *DDogServer) Run() error {
 		  GET  /v1/pl/refresh/{name}
 		  POST /v1/webhooks/receive, /v1/webhooks/create
 		  GET  /v1/webhooks/events, /v1/webhooks/stats
+		  GET  /v1/webhooks/dispatcher/stats
+		  GET  /v1/agents/stats
 		  POST /v1/rum/init, /v1/rum/track
 		  GET  /v1/rum/analytics, /v1/rum/visitors
 		  GET  /v1/monitors, /v1/monitors/triggered, /v1/monitors/{id}
@@ -222,13 +254,47 @@ func (d *DDogServer) Run() error {
 		  GET  /v1/services
 		  POST /v1/services/definitions
 		  POST /v1/demo/seed/all
-	`, d.addr)
+
+		Concurrency Architecture:
+		  Workers:       %d (dispatcher)
+		  Queue Size:    %d (buffered)
+		  Max Agents:    %d (concurrent)
+	`, d.addr, dispatcherConfig.Workers, dispatcherConfig.QueueSize, agentOrchConfig.MaxConcurrent)
 
 	// Wrap router with custom tracing middleware that properly propagates spans
 	// and tags errors for APM visibility
 	tracedRouter := traceMiddleware(router)
 
-	return http.ListenAndServe(d.addr, tracedRouter)
+	// Create server with context-aware shutdown
+	server := &http.Server{
+		Addr:    d.addr,
+		Handler: tracedRouter,
+	}
+
+	// Handle graceful shutdown
+	go func() {
+		<-ctx.Done()
+		log.Println("Shutting down HTTP server...")
+
+		// Give in-flight requests 30 seconds to complete
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("HTTP server shutdown error: %v", err)
+		}
+
+		// Shutdown dispatcher (drains worker pool)
+		if d.dispatcher != nil {
+			d.dispatcher.Shutdown()
+		}
+	}()
+
+	log.Printf("HTTP server starting on %s", d.addr)
+	if err := server.ListenAndServe(); err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 // log.Println("\x1B[3m" + green + "DB: Successfully Connected" + "\x1B[0m")

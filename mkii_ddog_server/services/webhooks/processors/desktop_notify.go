@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"os"
 	"regexp"
-	"time"
 
+	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/httpclient"
 	"github.com/Nokodoko/mkii_ddog_server/services/webhooks"
 )
 
@@ -37,7 +37,7 @@ func NewDesktopNotifyProcessor() *DesktopNotifyProcessor {
 	}
 	return &DesktopNotifyProcessor{
 		serverURL: url,
-		client:    &http.Client{Timeout: 5 * time.Second},
+		client:    httpclient.NotifyClient, // Use shared client with connection pooling
 	}
 }
 

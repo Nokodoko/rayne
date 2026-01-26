@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
+	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/httpclient"
 	"github.com/Nokodoko/mkii_ddog_server/services/webhooks"
 )
 
@@ -18,7 +18,7 @@ type ForwardingProcessor struct {
 // NewForwardingProcessor creates a new forwarding processor
 func NewForwardingProcessor() *ForwardingProcessor {
 	return &ForwardingProcessor{
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: httpclient.ForwardingClient, // Use shared client with connection pooling
 	}
 }
 

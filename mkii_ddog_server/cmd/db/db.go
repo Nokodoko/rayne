@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/Nokodoko/mkii_ddog_server/cmd/config"
 	"github.com/lib/pq"
@@ -38,6 +39,13 @@ func SqlStorage(cfg config.Config) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	log.Println("Database connection established with APM tracing")
+	// Configure connection pool for concurrent workload
+	// Prevents pool exhaustion under load while maintaining efficiency
+	db.SetMaxOpenConns(25)                  // Max concurrent connections
+	db.SetMaxIdleConns(5)                   // Keep some connections warm
+	db.SetConnMaxLifetime(5 * time.Minute)  // Recycle connections periodically
+	db.SetConnMaxIdleTime(1 * time.Minute)  // Close idle connections quickly
+
+	log.Println("Database connection established with APM tracing and connection pooling")
 	return db, nil
 }

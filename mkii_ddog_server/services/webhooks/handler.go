@@ -1,13 +1,10 @@
 package webhooks
 
 import (
-	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
-	"time"
 
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/requests"
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/urls"
@@ -15,138 +12,24 @@ import (
 
 // Handler handles webhook HTTP requests
 type Handler struct {
-	storage   *Storage
-	processor *Processor
+	storage    *Storage
+	dispatcher *Dispatcher
+	processor  *Processor // Legacy processor for backwards compatibility
 }
 
-// NewHandler creates a new webhook handler
-func NewHandler(storage *Storage, processor *Processor) *Handler {
+// NewHandler creates a new webhook handler with dispatcher
+func NewHandler(storage *Storage, dispatcher *Dispatcher) *Handler {
+	return &Handler{
+		storage:    storage,
+		dispatcher: dispatcher,
+	}
+}
+
+// NewHandlerLegacy creates a handler with the legacy processor (for backwards compatibility)
+func NewHandlerLegacy(storage *Storage, processor *Processor) *Handler {
 	return &Handler{
 		storage:   storage,
 		processor: processor,
-	}
-}
-
-// triggerAnalysis sends the webhook payload to the claude-agent /analyze endpoint
-// to generate an incident report notebook in Datadog
-func triggerAnalysis(payload WebhookPayload) {
-	agentURL := os.Getenv("CLAUDE_AGENT_URL")
-	if agentURL == "" {
-		agentURL = "http://localhost:9000"
-	}
-
-	// Use fallbacks for monitor_id and monitor_name (Datadog test webhooks may omit these)
-	monitorID := payload.MonitorID
-	if monitorID == 0 {
-		monitorID = payload.AlertID // Fallback to alert_id
-	}
-	monitorName := payload.MonitorName
-	if monitorName == "" {
-		monitorName = payload.AlertTitleCustom // Fallback to ALERT_TITLE
-	}
-	if monitorName == "" {
-		monitorName = payload.AlertTitle // Fallback to alert_title
-	}
-
-	log.Printf("[WEBHOOK] Triggering analysis for monitor %d: %s", monitorID, monitorName)
-
-	// Build analyze request payload
-	analyzePayload := map[string]interface{}{
-		"payload": map[string]interface{}{
-			"monitor_id":           monitorID,
-			"monitor_name":         monitorName,
-			"alert_status":         payload.AlertStatus,
-			"hostname":             payload.Hostname,
-			"service":              payload.Service,
-			"scope":                payload.Scope,
-			"tags":                 payload.Tags,
-			"ALERT_STATE":          payload.AlertState,
-			"ALERT_TITLE":          payload.AlertTitleCustom,
-			"APPLICATION_TEAM":     payload.ApplicationTeam,
-			"APPLICATION_LONGNAME": payload.ApplicationLongname,
-			"DETAILED_DESCRIPTION": payload.DetailedDescription,
-			"IMPACT":               payload.Impact,
-			"METRIC":               payload.Metric,
-			"SUPPORT_GROUP":        payload.SupportGroup,
-			"THRESHOLD":            payload.Threshold,
-			"VALUE":                payload.Value,
-			"URGENCY":              payload.Urgency,
-		},
-	}
-
-	jsonData, err := json.Marshal(analyzePayload)
-	if err != nil {
-		log.Printf("[WEBHOOK] Failed to marshal analyze payload: %v", err)
-		return
-	}
-
-	client := &http.Client{Timeout: 120 * time.Second} // Long timeout for Claude analysis
-	resp, err := client.Post(agentURL+"/analyze", "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		log.Printf("[WEBHOOK] Failed to trigger analysis at %s: %v", agentURL, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Printf("[WEBHOOK] Failed to decode analysis response: %v", err)
-		return
-	}
-
-	if resp.StatusCode == http.StatusOK {
-		if notebook, ok := result["notebook"].(map[string]interface{}); ok {
-			if url, ok := notebook["url"].(string); ok {
-				log.Printf("[WEBHOOK] Incident report created: %s", url)
-			}
-		}
-		log.Printf("[WEBHOOK] Analysis completed for monitor %d", payload.MonitorID)
-	} else {
-		log.Printf("[WEBHOOK] Analysis failed with status %d: %v", resp.StatusCode, result)
-	}
-}
-
-// sendDesktopNotification sends a notification to the local notify-server
-// The server URL is configured via NOTIFY_SERVER_URL env var (default: http://host.minikube.internal:9999)
-func sendDesktopNotification(payload WebhookPayload) {
-	serverURL := os.Getenv("NOTIFY_SERVER_URL")
-	if serverURL == "" {
-		serverURL = "http://host.minikube.internal:9999"
-	}
-
-	// Forward the full custom payload fields to the notify server
-	notifyPayload := map[string]string{
-		"ALERT_STATE":         payload.AlertState,
-		"ALERT_TITLE":         payload.AlertTitleCustom,
-		"APPLICATION_LONGNAME": payload.ApplicationLongname,
-		"APPLICATION_TEAM":    payload.ApplicationTeam,
-		"DETAILED_DESCRIPTION": payload.DetailedDescription,
-		"IMPACT":              payload.Impact,
-		"METRIC":              payload.Metric,
-		"SUPPORT_GROUP":       payload.SupportGroup,
-		"THRESHOLD":           payload.Threshold,
-		"VALUE":               payload.Value,
-		"URGENCY":             payload.Urgency,
-	}
-
-	jsonData, err := json.Marshal(notifyPayload)
-	if err != nil {
-		log.Printf("[WEBHOOK] Failed to marshal notification payload: %v", err)
-		return
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(serverURL, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		log.Printf("[WEBHOOK] Failed to send notification to %s: %v", serverURL, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		log.Printf("[WEBHOOK] Desktop notification sent: %s", payload.AlertTitleCustom)
-	} else {
-		log.Printf("[WEBHOOK] Notification server returned status %d", resp.StatusCode)
 	}
 }
 
@@ -170,14 +53,19 @@ func (h *Handler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) (int, a
 	log.Printf("[WEBHOOK] Stored event ID: %d, Monitor: %s (%d), Status: %s",
 		event.ID, payload.MonitorName, payload.MonitorID, payload.AlertStatus)
 
-	// Send desktop notification with full payload
-	go sendDesktopNotification(payload)
-
-	// Trigger Claude analysis and incident report generation
-	go triggerAnalysis(payload)
-
-	// Process asynchronously (downtime creation, forwarding, etc.)
-	go h.processor.Process(event)
+	// Submit to dispatcher for bounded, coordinated processing
+	// This replaces the fire-and-forget goroutines with proper backpressure
+	if h.dispatcher != nil {
+		if err := h.dispatcher.Submit(r.Context(), event); err != nil {
+			log.Printf("[WEBHOOK] Warning: dispatcher queue full, event %d stored but processing delayed: %v",
+				event.ID, err)
+			// Event is still stored, will be processed when queue has capacity
+			// or via manual reprocessing
+		}
+	} else if h.processor != nil {
+		// Legacy fallback: fire-and-forget (backwards compatibility)
+		go h.processor.Process(event)
+	}
 
 	return http.StatusAccepted, map[string]interface{}{
 		"event_id": event.ID,
@@ -317,18 +205,52 @@ func (h *Handler) GetWebhookStats(w http.ResponseWriter, r *http.Request) (int, 
 
 // ReprocessPending reprocesses all pending webhook events
 func (h *Handler) ReprocessPending(w http.ResponseWriter, r *http.Request) (int, any) {
-	if err := h.processor.ProcessPending(); err != nil {
+	// Get pending events
+	events, _, err := h.storage.GetRecentEvents(100, 0)
+	if err != nil {
 		return http.StatusInternalServerError, map[string]string{"error": err.Error()}
 	}
 
-	return http.StatusOK, map[string]string{"status": "reprocessing started"}
+	count := 0
+	for _, event := range events {
+		if event.Status == "pending" {
+			eventCopy := event
+			if h.dispatcher != nil {
+				if err := h.dispatcher.Submit(r.Context(), &eventCopy); err == nil {
+					count++
+				}
+			} else if h.processor != nil {
+				go h.processor.Process(&eventCopy)
+				count++
+			}
+		}
+	}
+
+	return http.StatusOK, map[string]interface{}{
+		"status":  "reprocessing started",
+		"queued":  count,
+	}
 }
 
 // ListProcessors returns the list of registered webhook processors
 func (h *Handler) ListProcessors(w http.ResponseWriter, r *http.Request) (int, any) {
-	processors := h.processor.ListProcessors()
+	var processors []string
+	if h.processor != nil {
+		processors = h.processor.ListProcessors()
+	}
+
 	return http.StatusOK, map[string]interface{}{
 		"processors": processors,
 		"count":      len(processors),
 	}
+}
+
+// GetDispatcherStats returns dispatcher statistics
+func (h *Handler) GetDispatcherStats(w http.ResponseWriter, r *http.Request) (int, any) {
+	if h.dispatcher == nil {
+		return http.StatusOK, map[string]string{"status": "dispatcher not configured"}
+	}
+
+	stats := h.dispatcher.Stats()
+	return http.StatusOK, stats
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/httpclient"
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/keys"
 	"github.com/Nokodoko/mkii_ddog_server/services/webhooks"
 )
@@ -23,7 +24,7 @@ type DowntimeProcessor struct {
 func NewDowntimeProcessor() *DowntimeProcessor {
 	return &DowntimeProcessor{
 		apiURL: "https://api.ddog-gov.com/api/v2/downtime",
-		client: &http.Client{Timeout: 30 * time.Second},
+		client: httpclient.DatadogClient, // Use shared client with connection pooling
 	}
 }
 

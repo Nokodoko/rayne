@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"time"
 
+	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/httpclient"
 	"github.com/Nokodoko/mkii_ddog_server/services/webhooks"
 )
 
 // ClaudeAgentProcessor invokes the Claude AI agent for RCA analysis
+// NOTE: This processor is deprecated in favor of the agent orchestrator.
+// It remains for backwards compatibility with legacy configurations.
 type ClaudeAgentProcessor struct {
 	agentURL string
 	client   *http.Client
@@ -25,7 +27,7 @@ func NewClaudeAgentProcessor() *ClaudeAgentProcessor {
 	}
 	return &ClaudeAgentProcessor{
 		agentURL: url,
-		client:   &http.Client{Timeout: 120 * time.Second}, // Long timeout for AI analysis
+		client:   httpclient.AgentClient, // Use shared client with connection pooling
 	}
 }
 

@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/Nokodoko/mkii_ddog_server/cmd/api"
 	"github.com/Nokodoko/mkii_ddog_server/cmd/config"
@@ -18,6 +22,20 @@ import (
 //*automate /var/log to rotate log files - prevent filling disk space*
 
 func main() {
+	// Create root context with cancellation for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle shutdown signals
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		sig := <-sigCh
+		log.Printf("Received signal %v, initiating graceful shutdown...", sig)
+		cancel()
+	}()
+
 	// Start Datadog APM tracer - automatically starts on every application restart
 	tracer.Start(
 		tracer.WithService(config.Envs.DDService),
@@ -29,15 +47,18 @@ func main() {
 	log.Printf("Datadog APM tracer started: service=%s env=%s version=%s agent=%s",
 		config.Envs.DDService, config.Envs.DDEnv, config.Envs.DDVersion, config.Envs.DDAgentHost)
 
-	db, err := db.SqlStorage(config.Envs)
+	database, err := db.SqlStorage(config.Envs)
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer database.Close()
 
-	server := api.NewDdogServer(":8080", db)
-	if err = server.Run(); err != nil {
+	server := api.NewDdogServer(":8080", database)
+	if err = server.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatal(err)
 	}
+
+	log.Println("Server shutdown complete")
 }
 
 func initStorage(db *sql.DB) {
