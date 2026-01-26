@@ -66,13 +66,17 @@ func (o *ProcessorOrchestrator) Process(ctx context.Context, event *WebhookEvent
 	log.Printf("[ORCHESTRATOR] Processing event %d (status: %s)",
 		event.ID, event.Payload.AlertStatus)
 
-	// Get active configurations
-	configs, err := o.storage.GetActiveConfigs()
-	if err != nil {
-		log.Printf("[ORCHESTRATOR] Error getting configs: %v", err)
-		result.Errors = append(result.Errors, "failed to get configs: "+err.Error())
-		o.storage.UpdateEventStatus(event.ID, "failed", nil, err.Error())
-		return result
+	// Get active configurations (handle nil storage for testing)
+	var configs []WebhookConfig
+	var err error
+	if o.storage != nil && o.storage.db != nil {
+		configs, err = o.storage.GetActiveConfigs()
+		if err != nil {
+			log.Printf("[ORCHESTRATOR] Error getting configs: %v", err)
+			result.Errors = append(result.Errors, "failed to get configs: "+err.Error())
+			o.storage.UpdateEventStatus(event.ID, "failed", nil, err.Error())
+			return result
+		}
 	}
 
 	// Use a default empty config if none exist
@@ -141,7 +145,9 @@ func (o *ProcessorOrchestrator) Process(ctx context.Context, event *WebhookEvent
 		}
 	}
 
-	o.storage.UpdateEventStatus(event.ID, status, forwardedTo, errorMsg)
+	if o.storage != nil && o.storage.db != nil {
+		o.storage.UpdateEventStatus(event.ID, status, forwardedTo, errorMsg)
+	}
 
 	log.Printf("[ORCHESTRATOR] Event %d processed: status=%s, processors=%v, errors=%d",
 		event.ID, status, result.ProcessedBy, len(result.Errors))
