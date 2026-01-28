@@ -1,6 +1,8 @@
 // Monty Chat WebSocket Client (montyWorldWide - no tools for public safety)
 // Using IP address since browser can't resolve internal hostname
-const MONTY_WS_URL = 'ws://192.168.50.68:8001/ws/chat';
+const MONTY_HOST = '192.168.50.68';
+const MONTY_PORT = '8001';
+const MONTY_WS_URL = `ws://${MONTY_HOST}:${MONTY_PORT}/chat/ws`;
 
 let ws = null;
 let conversationId = null;
@@ -174,13 +176,14 @@ function handleMessage(data) {
             break;
 
         case 'done':
+        case 'completed':
             // Message complete
             currentMessageEl = null;
             currentContent = '';
             break;
 
         case 'error':
-            addErrorMessage(data.error || 'An error occurred');
+            addErrorMessage(data.error_message || data.error || 'An error occurred');
             currentMessageEl = null;
             currentContent = '';
             break;

@@ -191,6 +191,7 @@ func (d *DDogServer) Run(ctx context.Context) error {
 	utils.Endpoint(router, "POST", "/v1/webhooks/reprocess", webhookHandler.ReprocessPending)
 	utils.Endpoint(router, "GET", "/v1/webhooks/processors", webhookHandler.ListProcessors)
 	utils.Endpoint(router, "GET", "/v1/webhooks/dispatcher/stats", webhookHandler.GetDispatcherStats)
+	utils.Endpoint(router, "GET", "/v1/webhooks/test-notify", webhookHandler.TestNotify)
 
 	// Agent orchestrator stats
 	utils.Endpoint(router, "GET", "/v1/agents/stats", func(w http.ResponseWriter, r *http.Request) (int, any) {

@@ -17,7 +17,7 @@ spec:
         version: v1
         tags.datadoghq.com/env: "staging"
         tags.datadoghq.com/service: "rayne"
-        tags.datadoghq.com/version: "1.0.0"
+        tags.datadoghq.com/version: "2.0.1"
       annotations:
         # Datadog Log Collection - collect logs from stdout/stderr
         ad.datadoghq.com/rayne.logs: |
@@ -37,7 +37,12 @@ spec:
       initContainers:
         - name: init-claude-credentials
           image: busybox:1.36
-          command: ['sh', '-c', 'cp /credentials/.credentials.json /claude-home/.credentials.json && chown -R 1000:1000 /claude-home']
+          command:
+            [
+              "sh",
+              "-c",
+              "cp /credentials/.credentials.json /claude-home/.credentials.json && chown -R 1000:1000 /claude-home",
+            ]
           volumeMounts:
             - name: claude-credentials-secret
               mountPath: /credentials
@@ -48,7 +53,7 @@ spec:
         # Main Rayne Go API container
         - name: rayne
           image: rayne:latest
-          imagePullPolicy: Never  # For minikube local images
+          imagePullPolicy: Never # For minikube local images
           ports:
             - containerPort: 8080
               name: http
@@ -89,10 +94,13 @@ spec:
             - name: DD_ENV
               value: "staging"
             - name: DD_VERSION
-              value: "1.0.0"
+              value: "2.0.1"
             # Claude Agent sidecar URL
             - name: CLAUDE_AGENT_URL
               value: "http://localhost:9000"
+            # Desktop notification servers (comma-separated)
+            - name: NOTIFY_SERVER_URLS
+              value: "http://host.minikube.internal:9999,http://192.168.50.68:9999"
           resources:
             requests:
               memory: "64Mi"
@@ -120,7 +128,7 @@ spec:
         # Claude Agent sidecar - Claude Code CLI + Python dd_lib
         - name: claude-agent
           image: claude-agent:latest
-          imagePullPolicy: Never  # For minikube local images
+          imagePullPolicy: Never # For minikube local images
           ports:
             - containerPort: 9000
               name: agent
@@ -147,15 +155,18 @@ spec:
                 secretKeyRef:
                   name: anthropic-secrets
                   key: api-key
-                  optional: true  # May not exist if using token auth
+                  optional: true # May not exist if using token auth
             - name: CLAUDE_AUTH_MODE
-              value: "auto"  # Will auto-detect based on available credentials
+              value: "auto" # Will auto-detect based on available credentials
             # Vector DB connection for RCA storage
             - name: QDRANT_URL
               value: "http://qdrant-service:6333"
             # Ollama for embeddings
             - name: OLLAMA_URL
               value: "http://ollama-service:11434"
+            # Desktop notification servers (comma-separated)
+            - name: NOTIFY_SERVER_URLS
+              value: "http://host.minikube.internal:9999,http://192.168.50.68:9999"
           resources:
             requests:
               memory: "512Mi"
@@ -221,4 +232,4 @@ spec:
       port: 8080
       targetPort: 8080
       name: http
-  type: NodePort  # For minikube access
+  type: NodePort # For minikube access

@@ -215,9 +215,11 @@ func (d *Dispatcher) worker(id int) {
 	log.Printf("[DISPATCHER] Worker %d started", id)
 
 	for job := range d.workQueue {
+		log.Printf("[DISPATCHER] Worker %d received job for event %d", id, job.Event.ID)
 		atomic.AddInt64(&d.activeWorkers, 1)
 
 		result := d.processJob(job)
+		log.Printf("[DISPATCHER] Worker %d finished job for event %d, success=%v", id, job.Event.ID, result.Success)
 
 		atomic.AddInt64(&d.activeWorkers, -1)
 		atomic.AddInt64(&d.processedCount, 1)
@@ -268,7 +270,9 @@ func (d *Dispatcher) processJob(job *WebhookJob) JobResult {
 	}
 
 	// Process through orchestrator
+	log.Printf("[DISPATCHER] Worker calling orchestrator.Process for event %d", job.Event.ID)
 	processorResult := d.orchestrator.Process(ctx, job.Event)
+	log.Printf("[DISPATCHER] Orchestrator returned for event %d: %d errors", job.Event.ID, len(processorResult.Errors))
 
 	result.ProcessedBy = processorResult.ProcessedBy
 	result.Errors = processorResult.Errors

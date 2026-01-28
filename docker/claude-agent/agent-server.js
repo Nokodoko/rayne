@@ -30,10 +30,18 @@ const CLAUDE_AUTH_MODE = process.env.CLAUDE_AUTH_MODE || 'auto'; // 'token', 'ap
 const CLAUDE_HOME = process.env.HOME || '/home/node';
 const CLAUDE_CREDS_PATH = path.join(CLAUDE_HOME, '.claude', '.credentials.json');
 
-// Notification server configuration
-const NOTIFY_SERVER_URL = process.env.NOTIFY_SERVER_URL || 'http://host.minikube.internal:9999';
+// Notification server configuration - supports multiple servers via comma-separated NOTIFY_SERVER_URLS
+const NOTIFY_SERVER_URLS = (() => {
+    const urls = process.env.NOTIFY_SERVER_URLS;
+    if (urls) {
+        return urls.split(',').map(u => u.trim()).filter(u => u);
+    }
+    const singleUrl = process.env.NOTIFY_SERVER_URL || 'http://host.minikube.internal:9999';
+    return [singleUrl];
+})();
 
 // Send desktop notification via notify-server (same as webhook receive endpoint)
+// Sends to all configured servers
 async function sendDesktopNotification(payload) {
     const notifyPayload = {
         ALERT_STATE: payload.ALERT_STATE || payload.alert_status || '',
@@ -49,16 +57,26 @@ async function sendDesktopNotification(payload) {
         URGENCY: payload.URGENCY || ''
     };
 
-    try {
-        const response = await httpRequest(NOTIFY_SERVER_URL, 'POST', notifyPayload);
-        if (response.status === 200) {
-            console.log(`[Notify] Desktop notification sent: ${notifyPayload.ALERT_TITLE}`);
-        } else {
-            console.log(`[Notify] Notification server returned status ${response.status}`);
-        }
-    } catch (err) {
-        console.log(`[Notify] Failed to send notification to ${NOTIFY_SERVER_URL}: ${err.message}`);
-    }
+    // Send to all configured servers
+    const results = await Promise.allSettled(
+        NOTIFY_SERVER_URLS.map(async (serverUrl) => {
+            try {
+                const response = await httpRequest(serverUrl, 'POST', notifyPayload);
+                if (response.status === 200) {
+                    console.log(`[Notify] Sent to ${serverUrl}: ${notifyPayload.ALERT_TITLE}`);
+                } else {
+                    console.log(`[Notify] ${serverUrl} returned status ${response.status}`);
+                }
+                return { serverUrl, success: response.status === 200 };
+            } catch (err) {
+                console.log(`[Notify] Failed to send to ${serverUrl}: ${err.message}`);
+                return { serverUrl, success: false, error: err.message };
+            }
+        })
+    );
+
+    const successCount = results.filter(r => r.status === 'fulfilled' && r.value.success).length;
+    console.log(`[Notify] Sent to ${successCount}/${NOTIFY_SERVER_URLS.length} servers`);
 }
 
 // Check available auth methods

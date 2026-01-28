@@ -3,9 +3,17 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 
 	"n0kos.com/frontend/templates"
 )
+
+func getEnv(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
 
 func main() {
 	mux := http.NewServeMux()
@@ -17,8 +25,12 @@ func main() {
 	// Routes
 	mux.HandleFunc("/", handleIndex)
 
-	log.Println("Server starting on http://localhost:3000")
-	if err := http.ListenAndServe(":3000", mux); err != nil {
+	host := getEnv("SERVER_HOST", "0.0.0.0")
+	port := getEnv("SERVER_PORT", "3000")
+	addr := host + ":" + port
+
+	log.Printf("Server starting on http://%s", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
 }

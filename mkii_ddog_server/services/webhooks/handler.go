@@ -1,10 +1,15 @@
 package webhooks
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/requests"
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/urls"
@@ -55,8 +60,10 @@ func (h *Handler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) (int, a
 
 	// Submit to dispatcher for bounded, coordinated processing
 	// This replaces the fire-and-forget goroutines with proper backpressure
+	// IMPORTANT: Use context.Background() instead of r.Context() because the HTTP
+	// request context is cancelled after the handler returns, but processing is async
 	if h.dispatcher != nil {
-		if err := h.dispatcher.Submit(r.Context(), event); err != nil {
+		if err := h.dispatcher.Submit(context.Background(), event); err != nil {
 			log.Printf("[WEBHOOK] Warning: dispatcher queue full, event %d stored but processing delayed: %v",
 				event.ID, err)
 			// Event is still stored, will be processed when queue has capacity
@@ -253,4 +260,39 @@ func (h *Handler) GetDispatcherStats(w http.ResponseWriter, r *http.Request) (in
 
 	stats := h.dispatcher.Stats()
 	return http.StatusOK, stats
+}
+
+// TestNotify sends a test notification directly to configured servers (bypasses orchestrator)
+func (h *Handler) TestNotify(w http.ResponseWriter, r *http.Request) (int, any) {
+	urlsEnv := os.Getenv("NOTIFY_SERVER_URLS")
+	if urlsEnv == "" {
+		urlsEnv = os.Getenv("NOTIFY_SERVER_URL")
+	}
+	if urlsEnv == "" {
+		urlsEnv = "http://host.minikube.internal:9999"
+	}
+
+	results := make(map[string]string)
+	payload := []byte(`{"title":"Test","message":"Direct test notification","urgency":"normal"}`)
+
+	for _, serverURL := range strings.Split(urlsEnv, ",") {
+		serverURL = strings.TrimSpace(serverURL)
+		if serverURL == "" {
+			continue
+		}
+
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Post(serverURL, "application/json", bytes.NewBuffer(payload))
+		if err != nil {
+			results[serverURL] = "error: " + err.Error()
+			continue
+		}
+		resp.Body.Close()
+		results[serverURL] = "status: " + resp.Status
+	}
+
+	return http.StatusOK, map[string]interface{}{
+		"urls":    urlsEnv,
+		"results": results,
+	}
 }

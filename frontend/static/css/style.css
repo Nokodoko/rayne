@@ -357,8 +357,8 @@ html[data-darkreader-scheme] .gradient-text::before {
   position: absolute;
   bottom: 70px;
   right: 0;
-  width: 380px;
-  height: 520px;
+  width: 420px;
+  height: 1480px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 16px;
@@ -649,6 +649,6 @@ html[data-darkreader-scheme] .gradient-text::before {
   .chat-container {
     width: calc(100vw - 2rem);
     height: calc(100vh - 100px);
-    max-height: 500px;
+    max-height: 1200px;
   }
 }
