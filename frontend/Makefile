@@ -1,8 +1,7 @@
-.PHONY: dev build run generate clean monty-ollama monty-gateway monty-tunnel monty-rag monty-services monty-status
+.PHONY: dev build run generate clean monty-ollama monty-gateway monty-tunnel monty-rag monty-services monty-status restart
 
 # Monty backend host configuration
 MONTY_HOST ?= monty
-MONTY_IP ?= 192.168.50.68
 MONTY_GATEWAY_PORT ?= 8001
 MONTY_FRONTEND_PORT ?= 3000
 MONTY_RAG_DIR ?= /home/n0ko/montyWorldWide
@@ -36,7 +35,7 @@ monty-gateway: monty-rag
 # Set up SSH tunnel for frontend access via monty
 monty-tunnel:
 	@echo "Setting up SSH tunnel $(MONTY_HOST):$(MONTY_FRONTEND_PORT) -> localhost:$(MONTY_FRONTEND_PORT)..."
-	@pgrep -f "ssh -f -N -R.*:$(MONTY_FRONTEND_PORT)" > /dev/null || \
+	@ssh $(MONTY_HOST) "ss -tln | grep -q ':$(MONTY_FRONTEND_PORT) '" || \
 		ssh -f -N -R 0.0.0.0:$(MONTY_FRONTEND_PORT):localhost:$(MONTY_FRONTEND_PORT) $(MONTY_HOST)
 	@echo "Tunnel active: $(MONTY_HOST):$(MONTY_FRONTEND_PORT)"
 
@@ -68,6 +67,15 @@ build:
 # Run built binary
 run:
 	./bin/server
+
+# Restart server (kill existing, regenerate, and run with monty services)
+restart: monty-services
+	@echo "Stopping existing server..."
+	-@pkill -x frontend 2>/dev/null
+	-@fuser -k 3000/tcp 2>/dev/null
+	@sleep 1
+	@echo "Regenerating and restarting..."
+	templ generate && go run .
 
 # Watch for changes (requires templ watch)
 # Set SERVER_HOST and SERVER_PORT env vars to customize
