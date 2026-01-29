@@ -11,20 +11,34 @@ import (
 
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/httpclient"
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/keys"
+	"github.com/Nokodoko/mkii_ddog_server/services/accounts"
 	"github.com/Nokodoko/mkii_ddog_server/services/webhooks"
 )
 
-// DowntimeProcessor creates automatic downtimes when monitors recover
-type DowntimeProcessor struct {
-	apiURL string
-	client *http.Client
+// CredentialProvider interface at consumer side (interface ownership)
+type CredentialProvider interface {
+	GetByID(id int64) (*accounts.Account, error)
+	GetDefault() *accounts.Account
 }
 
-// NewDowntimeProcessor creates a new downtime processor
+// DowntimeProcessor creates automatic downtimes when monitors recover
+type DowntimeProcessor struct {
+	client   *http.Client
+	accounts CredentialProvider
+}
+
+// NewDowntimeProcessor creates a new downtime processor (backward compatible)
 func NewDowntimeProcessor() *DowntimeProcessor {
 	return &DowntimeProcessor{
-		apiURL: "https://api.ddog-gov.com/api/v2/downtime",
 		client: httpclient.DatadogClient, // Use shared client with connection pooling
+	}
+}
+
+// NewDowntimeProcessorWithAccounts creates a downtime processor with multi-account support
+func NewDowntimeProcessorWithAccounts(accounts CredentialProvider) *DowntimeProcessor {
+	return &DowntimeProcessor{
+		client:   httpclient.DatadogClient,
+		accounts: accounts,
 	}
 }
 
@@ -51,7 +65,10 @@ func (p *DowntimeProcessor) Process(event *webhooks.WebhookEvent, config *webhoo
 		duration = 120 // Default 2 hours
 	}
 
-	err := p.createDowntime(event.Payload.MonitorID, event.Payload.Scope, duration)
+	// Get credentials for this event's account
+	creds := p.getCredentials(event)
+
+	err := p.createDowntime(event.Payload.MonitorID, event.Payload.Scope, duration, creds)
 	if err != nil {
 		result.Success = false
 		result.Error = err.Error()
@@ -63,8 +80,32 @@ func (p *DowntimeProcessor) Process(event *webhooks.WebhookEvent, config *webhoo
 	return result
 }
 
+// getCredentials returns credentials for the event's account or default
+func (p *DowntimeProcessor) getCredentials(event *webhooks.WebhookEvent) keys.Credentials {
+	// If no account provider or no account ID, use default credentials
+	if p.accounts == nil || event.AccountID == nil {
+		return keys.Default()
+	}
+
+	// Try to get account-specific credentials
+	account, err := p.accounts.GetByID(*event.AccountID)
+	if err != nil || account == nil {
+		// Fall back to default account
+		account = p.accounts.GetDefault()
+	}
+	if account == nil {
+		return keys.Default()
+	}
+
+	return keys.Credentials{
+		APIKey:  account.APIKey,
+		AppKey:  account.AppKey,
+		BaseURL: account.BaseURL,
+	}
+}
+
 // createDowntime creates a downtime via Datadog API
-func (p *DowntimeProcessor) createDowntime(monitorID int64, scope string, durationMinutes int) error {
+func (p *DowntimeProcessor) createDowntime(monitorID int64, scope string, durationMinutes int, creds keys.Credentials) error {
 	now := time.Now().UTC()
 	end := now.Add(time.Duration(durationMinutes) * time.Minute)
 
@@ -87,22 +128,25 @@ func (p *DowntimeProcessor) createDowntime(monitorID int64, scope string, durati
 
 	jsonBody, err := json.Marshal(request)
 	if err != nil {
-		return fmt.Errorf("failed to marshal request: %v", err)
+		return fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", p.apiURL, bytes.NewBuffer(jsonBody))
+	// Build API URL from account's base URL
+	apiURL := creds.BuildURL(accounts.PathDowntime)
+
+	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %v", err)
+		return fmt.Errorf("create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("DD-API-KEY", keys.Api())
-	req.Header.Set("DD-APPLICATION-KEY", keys.App())
+	req.Header.Set("DD-API-KEY", creds.APIKey)
+	req.Header.Set("DD-APPLICATION-KEY", creds.AppKey)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %v", err)
+		return fmt.Errorf("execute request: %w", err)
 	}
 	defer resp.Body.Close()
 

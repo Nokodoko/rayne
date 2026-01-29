@@ -76,6 +76,8 @@ type WebhookEvent struct {
 	Status      string         `json:"status"` // "pending", "processing", "processed", "failed"
 	ForwardedTo []string       `json:"forwarded_to,omitempty"`
 	Error       string         `json:"error,omitempty"`
+	AccountID   *int64         `json:"account_id,omitempty"`
+	AccountName string         `json:"account_name,omitempty"`
 }
 
 // WebhookConfig represents configuration for a webhook endpoint

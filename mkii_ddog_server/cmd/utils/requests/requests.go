@@ -2,7 +2,9 @@ package requests
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -171,6 +173,152 @@ func Delete[T any](w http.ResponseWriter, r *http.Request, url string) (T, int, 
 	if len(bodyBytes) > 0 {
 		if err = json.Unmarshal(bodyBytes, &parsedResponse); err != nil {
 			return zero, http.StatusInternalServerError, err
+		}
+	}
+
+	return parsedResponse, response.StatusCode, nil
+}
+
+// GetWithCreds sends a GET request using account-specific credentials
+func GetWithCreds[T any](ctx context.Context, url string, creds keys.Credentials) (T, int, error) {
+	var parsedResponse T
+	zero := *new(T)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("DD-API-KEY", creds.APIKey)
+	req.Header.Set("DD-APPLICATION-KEY", creds.AppKey)
+
+	response, err := tracedClient.Do(req)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("execute request: %w", err)
+	}
+	defer response.Body.Close()
+
+	bodyBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("read response: %w", err)
+	}
+
+	if err = json.Unmarshal(bodyBytes, &parsedResponse); err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("parse response: %w", err)
+	}
+
+	return parsedResponse, response.StatusCode, nil
+}
+
+// PostWithCreds sends a POST request using account-specific credentials
+func PostWithCreds[T any](ctx context.Context, url string, payload any, creds keys.Credentials) (T, int, error) {
+	var parsedResponse T
+	zero := *new(T)
+
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("DD-API-KEY", creds.APIKey)
+	req.Header.Set("DD-APPLICATION-KEY", creds.AppKey)
+
+	response, err := tracedClient.Do(req)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("execute request: %w", err)
+	}
+	defer response.Body.Close()
+
+	bodyBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("read response: %w", err)
+	}
+
+	if len(bodyBytes) > 0 {
+		if err = json.Unmarshal(bodyBytes, &parsedResponse); err != nil {
+			return zero, http.StatusInternalServerError, fmt.Errorf("parse response: %w", err)
+		}
+	}
+
+	return parsedResponse, response.StatusCode, nil
+}
+
+// PutWithCreds sends a PUT request using account-specific credentials
+func PutWithCreds[T any](ctx context.Context, url string, payload any, creds keys.Credentials) (T, int, error) {
+	var parsedResponse T
+	zero := *new(T)
+
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "PUT", url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("DD-API-KEY", creds.APIKey)
+	req.Header.Set("DD-APPLICATION-KEY", creds.AppKey)
+
+	response, err := tracedClient.Do(req)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("execute request: %w", err)
+	}
+	defer response.Body.Close()
+
+	bodyBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("read response: %w", err)
+	}
+
+	if len(bodyBytes) > 0 {
+		if err = json.Unmarshal(bodyBytes, &parsedResponse); err != nil {
+			return zero, http.StatusInternalServerError, fmt.Errorf("parse response: %w", err)
+		}
+	}
+
+	return parsedResponse, response.StatusCode, nil
+}
+
+// DeleteWithCreds sends a DELETE request using account-specific credentials
+func DeleteWithCreds[T any](ctx context.Context, url string, creds keys.Credentials) (T, int, error) {
+	var parsedResponse T
+	zero := *new(T)
+
+	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("DD-API-KEY", creds.APIKey)
+	req.Header.Set("DD-APPLICATION-KEY", creds.AppKey)
+
+	response, err := tracedClient.Do(req)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("execute request: %w", err)
+	}
+	defer response.Body.Close()
+
+	bodyBytes, err := io.ReadAll(response.Body)
+	if err != nil {
+		return zero, http.StatusInternalServerError, fmt.Errorf("read response: %w", err)
+	}
+
+	if len(bodyBytes) > 0 {
+		if err = json.Unmarshal(bodyBytes, &parsedResponse); err != nil {
+			return zero, http.StatusInternalServerError, fmt.Errorf("parse response: %w", err)
 		}
 	}
 
