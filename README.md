@@ -4,8 +4,9 @@ A Go-based REST API server that wraps the Datadog API, providing endpoints to ma
 
 ## Features
 
+- **Multi-Account Support**: Manage multiple Datadog organizations (US Gov, Commercial, EU, etc.) from a single instance
 - **Datadog API Proxy**: Downtimes, events, hosts, and private location management
-- **Webhook Handling**: Receive, store, and process Datadog webhooks with auto-downtime triggers
+- **Webhook Handling**: Receive, store, and process Datadog webhooks with auto-downtime triggers and automatic account routing
 - **AI-Powered RCA**: Automatic Root Cause Analysis via Claude Code when alerts trigger
 - **Incident Report Notebooks**: Auto-generated Datadog Notebooks with hyperlinks to all referenced resources
 - **Pre-fetched Datadog Context**: Logs, events, host info, and monitor details fetched before RCA analysis
@@ -198,10 +199,107 @@ helm install datadog-agent datadog/datadog \
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/v1/webhooks/receive` | Receive Datadog webhooks (triggers RCA on Alert/Warn) |
+| POST | `/v1/webhooks/receive/{account}` | Receive webhook with explicit account routing |
 | GET | `/v1/webhooks/events` | List stored webhook events |
 | POST | `/v1/webhooks/create` | Create webhook in Datadog |
 | GET | `/v1/webhooks/stats` | Webhook statistics |
 | POST | `/v1/webhooks/config` | Save webhook configuration |
+
+### Multi-Account Management
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/v1/accounts` | List all Datadog accounts (credentials hidden) |
+| POST | `/v1/accounts` | Create new Datadog account |
+| GET | `/v1/accounts/{name}` | Get account by name |
+| PUT | `/v1/accounts/{name}` | Update account |
+| DELETE | `/v1/accounts/{name}` | Delete account |
+| POST | `/v1/accounts/{name}/default` | Set account as default |
+| POST | `/v1/accounts/{name}/test` | Test account credentials against Datadog API |
+
+## Webhook Payload
+
+When sending webhooks to `/v1/webhooks/receive`, the following JSON payload format is expected:
+
+### Standard Datadog Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `alert_id` | int64 | Unique alert identifier |
+| `alert_title` | string | Title of the alert |
+| `alert_message` | string | Alert message body |
+| `alert_status` | string | Alert state: `"Alert"`, `"OK"`, `"Warn"`, or `"No Data"` |
+| `monitor_id` | int64 | Datadog monitor ID |
+| `monitor_name` | string | Name of the monitor |
+| `monitor_type` | string | Type of monitor (e.g., `"metric alert"`, `"service check"`) |
+| `tags` | string[] | Array of tags (e.g., `["env:production", "team:platform"]`) |
+| `timestamp` | int64 | Unix timestamp of the event |
+| `event_type` | string | Type of event |
+| `priority` | string | Alert priority |
+| `hostname` | string | Affected hostname |
+| `service` | string | Affected service name |
+| `scope` | string | Alert scope (e.g., `"host:web-server-01"`) |
+| `transition_id` | string | Unique transition identifier |
+| `last_updated` | int64 | Last update timestamp |
+| `snapshot_url` | string | URL to alert snapshot |
+| `link` | string | Link to the monitor in Datadog |
+| `org_id` | int64 | Datadog organization ID (used for multi-account routing) |
+| `org_name` | string | Organization name |
+
+### Custom Fields (Terraform Webhook Config)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ALERT_STATE` | string | Custom alert state |
+| `ALERT_TITLE` | string | Custom alert title |
+| `APPLICATION_LONGNAME` | string | Full application name |
+| `APPLICATION_TEAM` | string | Responsible team |
+| `DETAILED_DESCRIPTION` | string | Detailed alert description |
+| `IMPACT` | string | Impact assessment |
+| `METRIC` | string | Affected metric |
+| `SUPPORT_GROUP` | string | Support group |
+| `THRESHOLD` | string | Alert threshold value |
+| `VALUE` | string | Current metric value |
+| `URGENCY` | string | Alert urgency level |
+
+### Example Payload
+
+```json
+{
+  "alert_id": 123456789,
+  "alert_title": "High CPU Usage on web-server-01",
+  "alert_message": "CPU usage exceeded 90% threshold",
+  "alert_status": "Alert",
+  "monitor_id": 12345678,
+  "monitor_name": "High CPU Alert",
+  "monitor_type": "metric alert",
+  "tags": ["env:production", "team:platform", "service:api-gateway"],
+  "timestamp": 1706540400,
+  "event_type": "alert",
+  "priority": "normal",
+  "hostname": "web-server-01.prod.example.com",
+  "service": "api-gateway",
+  "scope": "host:web-server-01",
+  "transition_id": "abc123",
+  "last_updated": 1706540400,
+  "snapshot_url": "https://app.datadoghq.com/snapshot/...",
+  "link": "https://app.datadoghq.com/monitors/12345678",
+  "org_id": 123456,
+  "org_name": "My Organization",
+  "APPLICATION_TEAM": "platform-engineering",
+  "SUPPORT_GROUP": "sre-oncall",
+  "URGENCY": "high"
+}
+```
+
+### Multi-Account Routing
+
+Webhooks are routed to the appropriate Datadog account using:
+
+1. **Explicit routing** via path parameter: `POST /v1/webhooks/receive/{account_name}`
+2. **Automatic routing** via `org_id` field in the payload (matched against stored accounts)
+3. **Default account** fallback when no match is found
+
+This allows a single Rayne instance to manage webhooks from multiple Datadog organizations (US Gov, Commercial, EU, etc.).
 
 ### RUM Visitor Tracking
 | Method | Endpoint | Description |
@@ -237,9 +335,22 @@ helm install datadog-agent datadog/datadog \
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `DD_API_KEY` | Yes | - | Datadog API key |
-| `DD_APP_KEY` | Yes | - | Datadog Application key |
-| `DD_API_URL` | No | https://api.datadoghq.com | Datadog API URL (use https://api.ddog-gov.com for US Gov) |
+| `DD_API_KEY` | Yes* | - | Datadog API key (*creates default account on startup if no accounts exist) |
+| `DD_APP_KEY` | Yes* | - | Datadog Application key (*creates default account on startup if no accounts exist) |
+| `DD_API_URL` | No | https://api.ddog-gov.com | Default Datadog API URL |
+
+### Supported Datadog Regions
+
+When creating accounts via `/v1/accounts`, use these base URLs:
+
+| Region | Base URL |
+|--------|----------|
+| US Government | `https://api.ddog-gov.com` |
+| US Commercial | `https://api.datadoghq.com` |
+| EU | `https://api.datadoghq.eu` |
+| US3 | `https://api.us3.datadoghq.com` |
+| US5 | `https://api.us5.datadoghq.com` |
+| AP1 (Asia-Pacific) | `https://api.ap1.datadoghq.com` |
 | `ANTHROPIC_API_KEY` | No* | - | Anthropic API key (*not needed if using Claude OAuth) |
 | `DB_HOST` | No | localhost | PostgreSQL host |
 | `DB_PORT` | No | 5432 | PostgreSQL port |
@@ -257,6 +368,7 @@ rayne/
 ├── mkii_ddog_server/     # Go server
 │   ├── cmd/              # Entry point and utilities
 │   ├── services/         # Service handlers
+│   │   ├── accounts/     # Multi-account Datadog management
 │   │   ├── demo/         # Demo data generators
 │   │   ├── downtimes/    # Datadog downtimes
 │   │   ├── events/       # Datadog events
