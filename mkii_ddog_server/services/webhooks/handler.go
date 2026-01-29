@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -13,13 +14,22 @@ import (
 
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/requests"
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils/urls"
+	"github.com/Nokodoko/mkii_ddog_server/services/accounts"
 )
+
+// AccountResolver interface defined at consumer side (Go best practice)
+// This allows webhook handler to be tested with mock implementations
+type AccountResolver interface {
+	ResolveAccount(orgID int64, accountName string) *accounts.Account
+	GetDefault() *accounts.Account
+}
 
 // Handler handles webhook HTTP requests
 type Handler struct {
 	storage    *Storage
 	dispatcher *Dispatcher
-	processor  *Processor // Legacy processor for backwards compatibility
+	processor  *Processor        // Legacy processor for backwards compatibility
+	accounts   AccountResolver   // Optional: for multi-account support
 }
 
 // NewHandler creates a new webhook handler with dispatcher
@@ -27,6 +37,15 @@ func NewHandler(storage *Storage, dispatcher *Dispatcher) *Handler {
 	return &Handler{
 		storage:    storage,
 		dispatcher: dispatcher,
+	}
+}
+
+// NewHandlerWithAccounts creates a new webhook handler with multi-account support
+func NewHandlerWithAccounts(storage *Storage, dispatcher *Dispatcher, accounts AccountResolver) *Handler {
+	return &Handler{
+		storage:    storage,
+		dispatcher: dispatcher,
+		accounts:   accounts,
 	}
 }
 
@@ -40,6 +59,16 @@ func NewHandlerLegacy(storage *Storage, processor *Processor) *Handler {
 
 // ReceiveWebhook handles incoming webhooks from Datadog
 func (h *Handler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) (int, any) {
+	return h.receiveWebhookInternal(w, r, "")
+}
+
+// ReceiveWebhookForAccount handles incoming webhooks with explicit account routing
+func (h *Handler) ReceiveWebhookForAccount(w http.ResponseWriter, r *http.Request, accountName string) (int, any) {
+	return h.receiveWebhookInternal(w, r, accountName)
+}
+
+// receiveWebhookInternal is the internal implementation for webhook receiving
+func (h *Handler) receiveWebhookInternal(w http.ResponseWriter, r *http.Request, explicitAccountName string) (int, any) {
 	var payload WebhookPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		return http.StatusBadRequest, map[string]string{"error": "invalid payload: " + err.Error()}
@@ -49,14 +78,33 @@ func (h *Handler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) (int, a
 	payloadJSON, _ := json.MarshalIndent(payload, "", "  ")
 	log.Printf("[WEBHOOK] Received payload:\n%s", string(payloadJSON))
 
-	// Store the event
-	event, err := h.storage.StoreEvent(payload)
+	// Resolve account from OrgID in payload or explicit account name
+	var accountID *int64
+	var accountName string
+
+	if h.accounts != nil {
+		account := h.accounts.ResolveAccount(payload.OrgID, explicitAccountName)
+		if account != nil {
+			accountID = &account.ID
+			accountName = account.Name
+			log.Printf("[WEBHOOK] Resolved account: %s (ID: %d) for org_id: %d",
+				accountName, account.ID, payload.OrgID)
+		} else if explicitAccountName != "" {
+			// Explicit account requested but not found
+			return http.StatusNotFound, map[string]string{
+				"error": fmt.Sprintf("account not found: %s", explicitAccountName),
+			}
+		}
+	}
+
+	// Store the event with account association
+	event, err := h.storage.StoreEventWithAccount(payload, accountID, accountName)
 	if err != nil {
 		return http.StatusInternalServerError, map[string]string{"error": "failed to store event: " + err.Error()}
 	}
 
-	log.Printf("[WEBHOOK] Stored event ID: %d, Monitor: %s (%d), Status: %s",
-		event.ID, payload.MonitorName, payload.MonitorID, payload.AlertStatus)
+	log.Printf("[WEBHOOK] Stored event ID: %d, Monitor: %s (%d), Status: %s, Account: %s",
+		event.ID, payload.MonitorName, payload.MonitorID, payload.AlertStatus, accountName)
 
 	// Submit to dispatcher for bounded, coordinated processing
 	// This replaces the fire-and-forget goroutines with proper backpressure
@@ -74,11 +122,16 @@ func (h *Handler) ReceiveWebhook(w http.ResponseWriter, r *http.Request) (int, a
 		go h.processor.Process(event)
 	}
 
-	return http.StatusAccepted, map[string]interface{}{
+	response := map[string]any{
 		"event_id": event.ID,
 		"status":   "accepted",
 		"message":  "Webhook received and queued for processing",
 	}
+	if accountName != "" {
+		response["account_name"] = accountName
+	}
+
+	return http.StatusAccepted, response
 }
 
 // GetWebhookEvents retrieves stored webhook events

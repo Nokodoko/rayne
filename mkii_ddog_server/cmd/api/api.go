@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Nokodoko/mkii_ddog_server/cmd/utils"
+	"github.com/Nokodoko/mkii_ddog_server/services/accounts"
 	"github.com/Nokodoko/mkii_ddog_server/services/agents"
 	"github.com/Nokodoko/mkii_ddog_server/services/catalog"
 	"github.com/Nokodoko/mkii_ddog_server/services/demo"
@@ -108,6 +109,16 @@ func (d *DDogServer) Run(ctx context.Context) error {
 	userStorage := user.NewStorage(d.db)
 	webhookStorage := webhooks.NewStorage(d.db)
 	rumStorage := rum.NewStorage(d.db)
+	accountStorage := accounts.NewStorage(d.db)
+
+	// Initialize account manager (multi-account support)
+	accountManager := accounts.NewAccountManager(accountStorage)
+	if err := accountStorage.InitTables(); err != nil {
+		log.Printf("Warning: Failed to initialize account tables: %v", err)
+	}
+	if err := accountManager.Initialize(); err != nil {
+		log.Printf("Warning: Failed to initialize account manager: %v", err)
+	}
 
 	// Initialize agent orchestrator with bounded concurrency
 	agentOrchConfig := agents.DefaultOrchestratorConfig()
@@ -128,9 +139,10 @@ func (d *DDogServer) Run(ctx context.Context) error {
 	procOrch := webhooks.NewProcessorOrchestrator(webhookStorage, agentOrch)
 
 	// Register fast processors (Tier 1: parallel execution)
+	// Use account-aware processors for multi-account support
 	procOrch.RegisterFastProcessor(processors.NewDesktopNotifyProcessor())
 	procOrch.RegisterFastProcessor(processors.NewForwardingProcessor())
-	procOrch.RegisterFastProcessor(processors.NewDowntimeProcessor())
+	procOrch.RegisterFastProcessor(processors.NewDowntimeProcessorWithAccounts(accountManager))
 	// Note: ClaudeAgentProcessor removed - agent analysis is now handled by Tier 2
 	// through the agent orchestrator for bounded concurrency
 
@@ -141,9 +153,10 @@ func (d *DDogServer) Run(ctx context.Context) error {
 
 	// Initialize handlers
 	userHandler := user.NewHandler(userStorage)
-	webhookHandler := webhooks.NewHandler(webhookStorage, d.dispatcher)
+	webhookHandler := webhooks.NewHandlerWithAccounts(webhookStorage, d.dispatcher, accountManager)
 	rumHandler := rum.NewHandler(rumStorage)
 	demoHandler := demo.NewHandler(webhookStorage, rumStorage)
+	accountHandler := accounts.NewHandler(accountManager)
 
 	// Initialize database tables for new services
 	if err := webhookStorage.InitTables(); err != nil {
@@ -181,6 +194,7 @@ func (d *DDogServer) Run(ctx context.Context) error {
 
 	// Webhooks
 	utils.Endpoint(router, "POST", "/v1/webhooks/receive", webhookHandler.ReceiveWebhook)
+	utils.EndpointWithPathParams(router, "POST", "/v1/webhooks/receive/{account}", "account", webhookHandler.ReceiveWebhookForAccount)
 	utils.Endpoint(router, "GET", "/v1/webhooks/events", webhookHandler.GetWebhookEvents)
 	utils.EndpointWithPathParams(router, "GET", "/v1/webhooks/events/{id}", "id", webhookHandler.GetWebhookEvent)
 	utils.EndpointWithPathParams(router, "GET", "/v1/webhooks/monitor/{monitorId}", "monitorId", webhookHandler.GetEventsByMonitor)
@@ -192,6 +206,16 @@ func (d *DDogServer) Run(ctx context.Context) error {
 	utils.Endpoint(router, "GET", "/v1/webhooks/processors", webhookHandler.ListProcessors)
 	utils.Endpoint(router, "GET", "/v1/webhooks/dispatcher/stats", webhookHandler.GetDispatcherStats)
 	utils.Endpoint(router, "GET", "/v1/webhooks/test-notify", webhookHandler.TestNotify)
+
+	// Accounts (multi-account Datadog management)
+	utils.Endpoint(router, "GET", "/v1/accounts", accountHandler.ListAccounts)
+	utils.Endpoint(router, "POST", "/v1/accounts", accountHandler.CreateAccount)
+	utils.Endpoint(router, "GET", "/v1/accounts/stats", accountHandler.GetStats)
+	utils.EndpointWithPathParams(router, "GET", "/v1/accounts/{name}", "name", accountHandler.GetAccount)
+	utils.EndpointWithPathParams(router, "PUT", "/v1/accounts/{name}", "name", accountHandler.UpdateAccount)
+	utils.EndpointWithPathParams(router, "DELETE", "/v1/accounts/{name}", "name", accountHandler.DeleteAccount)
+	utils.EndpointWithPathParams(router, "POST", "/v1/accounts/{name}/default", "name", accountHandler.SetDefaultAccount)
+	utils.EndpointWithPathParams(router, "POST", "/v1/accounts/{name}/test", "name", accountHandler.TestConnection)
 
 	// Agent orchestrator stats
 	utils.Endpoint(router, "GET", "/v1/agents/stats", func(w http.ResponseWriter, r *http.Request) (int, any) {
@@ -232,6 +256,7 @@ func (d *DDogServer) Run(ctx context.Context) error {
 	utils.Endpoint(router, "POST", "/v1/services/definitions", catalog.CreateServiceDefinition)
 	utils.Endpoint(router, "POST", "/v1/services/definitions/advanced", catalog.CreateServiceDefinitionAdvanced)
 
+	accountStats := accountManager.Stats()
 	log.Printf(`
 		.__.  ._  _
 		|(_|\/| |(/_
@@ -244,7 +269,7 @@ func (d *DDogServer) Run(ctx context.Context) error {
 		  GET  /v1/downtimes, /v1/events
 		  GET  /v1/hosts, /v1/hosts/active, /v1/hosts/{hostname}/tags
 		  GET  /v1/pl/refresh/{name}
-		  POST /v1/webhooks/receive, /v1/webhooks/create
+		  POST /v1/webhooks/receive, /v1/webhooks/receive/{account}
 		  GET  /v1/webhooks/events, /v1/webhooks/stats
 		  GET  /v1/webhooks/dispatcher/stats
 		  GET  /v1/agents/stats
@@ -255,12 +280,16 @@ func (d *DDogServer) Run(ctx context.Context) error {
 		  GET  /v1/services
 		  POST /v1/services/definitions
 		  POST /v1/demo/seed/all
+		  GET  /v1/accounts, POST /v1/accounts
+		  GET  /v1/accounts/{name}, PUT, DELETE
+		  POST /v1/accounts/{name}/test, /v1/accounts/{name}/default
 
 		Concurrency Architecture:
 		  Workers:       %d (dispatcher)
 		  Queue Size:    %d (buffered)
 		  Max Agents:    %d (concurrent)
-	`, d.addr, dispatcherConfig.Workers, dispatcherConfig.QueueSize, agentOrchConfig.MaxConcurrent)
+		  Accounts:      %v (cached by name)
+	`, d.addr, dispatcherConfig.Workers, dispatcherConfig.QueueSize, agentOrchConfig.MaxConcurrent, accountStats["cached_by_name"])
 
 	// Wrap router with custom tracing middleware that properly propagates spans
 	// and tags errors for APM visibility

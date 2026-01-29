@@ -47,7 +47,9 @@ func (s *Storage) InitTables() error {
 		processed_at TIMESTAMP WITH TIME ZONE,
 		status VARCHAR(50) DEFAULT 'pending',
 		forwarded_to TEXT[],
-		error_message TEXT
+		error_message TEXT,
+		account_id BIGINT,
+		account_name VARCHAR(255)
 	);
 
 	CREATE TABLE IF NOT EXISTS webhook_configs (
@@ -69,29 +71,58 @@ func (s *Storage) InitTables() error {
 	CREATE INDEX IF NOT EXISTS idx_webhook_events_status ON webhook_events(status);
 	CREATE INDEX IF NOT EXISTS idx_webhook_events_received_at ON webhook_events(received_at);
 	CREATE INDEX IF NOT EXISTS idx_webhook_events_alert_status ON webhook_events(alert_status);
+	CREATE INDEX IF NOT EXISTS idx_webhook_events_account_id ON webhook_events(account_id);
 	`
 
 	_, err := s.db.Exec(query)
+	if err != nil {
+		return err
+	}
+
+	// Add account columns if they don't exist (for existing tables)
+	alterQuery := `
+	DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+					   WHERE table_name = 'webhook_events' AND column_name = 'account_id') THEN
+			ALTER TABLE webhook_events ADD COLUMN account_id BIGINT;
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+					   WHERE table_name = 'webhook_events' AND column_name = 'account_name') THEN
+			ALTER TABLE webhook_events ADD COLUMN account_name VARCHAR(255);
+		END IF;
+	END $$;
+	`
+	_, err = s.db.Exec(alterQuery)
 	return err
 }
 
-// StoreEvent saves a webhook event to the database
+// StoreEvent saves a webhook event to the database (backward compatible)
 func (s *Storage) StoreEvent(payload WebhookPayload) (*WebhookEvent, error) {
+	return s.StoreEventWithAccount(payload, nil, "")
+}
+
+// StoreEventWithAccount saves a webhook event with account association
+func (s *Storage) StoreEventWithAccount(payload WebhookPayload, accountID *int64, accountName string) (*WebhookEvent, error) {
 	query := `
 	INSERT INTO webhook_events (
 		alert_id, alert_title, alert_message, alert_status,
 		monitor_id, monitor_name, monitor_type, tags,
 		event_timestamp, event_type, priority, hostname,
 		service, scope, transition_id, last_updated,
-		snapshot_url, link, org_id, org_name
+		snapshot_url, link, org_id, org_name,
+		account_id, account_name
 	) VALUES (
 		$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-		$11, $12, $13, $14, $15, $16, $17, $18, $19, $20
+		$11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+		$21, $22
 	) RETURNING id, received_at`
 
 	event := &WebhookEvent{
-		Payload: payload,
-		Status:  "pending",
+		Payload:     payload,
+		Status:      "pending",
+		AccountID:   accountID,
+		AccountName: accountName,
 	}
 
 	err := s.db.QueryRow(
@@ -101,6 +132,7 @@ func (s *Storage) StoreEvent(payload WebhookPayload) (*WebhookEvent, error) {
 		payload.Timestamp, payload.EventType, payload.Priority, payload.Hostname,
 		payload.Service, payload.Scope, payload.TransitionID, payload.LastUpdated,
 		payload.SnapshotURL, payload.Link, payload.OrgID, payload.OrgName,
+		accountID, accountName,
 	).Scan(&event.ID, &event.ReceivedAt)
 
 	if err != nil {
@@ -118,7 +150,8 @@ func (s *Storage) GetEventByID(id int64) (*WebhookEvent, error) {
 		event_timestamp, event_type, priority, hostname,
 		service, scope, transition_id, last_updated,
 		snapshot_url, link, org_id, org_name,
-		received_at, processed_at, status, forwarded_to, error_message
+		received_at, processed_at, status, forwarded_to, error_message,
+		account_id, account_name
 	FROM webhook_events WHERE id = $1`
 
 	event := &WebhookEvent{}
@@ -126,6 +159,8 @@ func (s *Storage) GetEventByID(id int64) (*WebhookEvent, error) {
 	var forwardedTo pq.StringArray
 	var errorMsg sql.NullString
 	var processedAt sql.NullTime
+	var accountID sql.NullInt64
+	var accountName sql.NullString
 
 	err := s.db.QueryRow(query, id).Scan(
 		&event.ID,
@@ -135,6 +170,7 @@ func (s *Storage) GetEventByID(id int64) (*WebhookEvent, error) {
 		&event.Payload.Service, &event.Payload.Scope, &event.Payload.TransitionID, &event.Payload.LastUpdated,
 		&event.Payload.SnapshotURL, &event.Payload.Link, &event.Payload.OrgID, &event.Payload.OrgName,
 		&event.ReceivedAt, &processedAt, &event.Status, &forwardedTo, &errorMsg,
+		&accountID, &accountName,
 	)
 
 	if err != nil {
@@ -148,6 +184,12 @@ func (s *Storage) GetEventByID(id int64) (*WebhookEvent, error) {
 	}
 	if processedAt.Valid {
 		event.ProcessedAt = &processedAt.Time
+	}
+	if accountID.Valid {
+		event.AccountID = &accountID.Int64
+	}
+	if accountName.Valid {
+		event.AccountName = accountName.String
 	}
 
 	return event, nil
@@ -167,7 +209,8 @@ func (s *Storage) GetRecentEvents(limit int, offset int) ([]WebhookEvent, int, e
 		event_timestamp, event_type, priority, hostname,
 		service, scope, transition_id, last_updated,
 		snapshot_url, link, org_id, org_name,
-		received_at, processed_at, status, forwarded_to, error_message
+		received_at, processed_at, status, forwarded_to, error_message,
+		account_id, account_name
 	FROM webhook_events
 	ORDER BY received_at DESC
 	LIMIT $1 OFFSET $2`
@@ -185,6 +228,8 @@ func (s *Storage) GetRecentEvents(limit int, offset int) ([]WebhookEvent, int, e
 		var forwardedTo pq.StringArray
 		var errorMsg sql.NullString
 		var processedAt sql.NullTime
+		var accountID sql.NullInt64
+		var accountName sql.NullString
 
 		err := rows.Scan(
 			&event.ID,
@@ -194,6 +239,7 @@ func (s *Storage) GetRecentEvents(limit int, offset int) ([]WebhookEvent, int, e
 			&event.Payload.Service, &event.Payload.Scope, &event.Payload.TransitionID, &event.Payload.LastUpdated,
 			&event.Payload.SnapshotURL, &event.Payload.Link, &event.Payload.OrgID, &event.Payload.OrgName,
 			&event.ReceivedAt, &processedAt, &event.Status, &forwardedTo, &errorMsg,
+			&accountID, &accountName,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -206,6 +252,12 @@ func (s *Storage) GetRecentEvents(limit int, offset int) ([]WebhookEvent, int, e
 		}
 		if processedAt.Valid {
 			event.ProcessedAt = &processedAt.Time
+		}
+		if accountID.Valid {
+			event.AccountID = &accountID.Int64
+		}
+		if accountName.Valid {
+			event.AccountName = accountName.String
 		}
 
 		events = append(events, event)
