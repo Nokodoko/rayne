@@ -2,14 +2,9 @@
 //
 // Protocol-aware WebSocket connection:
 //   - HTTPS (via Cloudflare tunnel): use wss:// with the public gateway domain
-//   - HTTP  (local dev):             use ws://  with the LAN IP
-//
-// TODO: Add a `gateway.n0kos.com` (or `api.n0kos.com`) subdomain route in the
-//       Cloudflare tunnel config and DNS once the Monty gateway is ready to be
-//       exposed publicly. The tunnel ingress rule should point to
-//       http://192.168.50.68:8001 (same as the LAN target below).
+//   - HTTP  (local dev):             use ws://  with the LAN IP (base host)
 
-const MONTY_LAN_HOST = '192.168.50.68';
+const MONTY_LAN_HOST = '192.168.50.179';
 const MONTY_LAN_PORT = '8001';
 const MONTY_PUBLIC_GATEWAY = 'gateway.n0kos.com';
 
@@ -77,13 +72,6 @@ function updateStatus(status, isOnline = false) {
     dot.classList.toggle('offline', !isOnline);
 }
 
-// Hide the chat toggle button entirely (used when gateway is unavailable)
-function hideChatWidget() {
-    const { toggle, container } = getElements();
-    if (toggle) toggle.style.display = 'none';
-    if (container) container.classList.add('hidden');
-}
-
 // Connect to WebSocket
 function connectWebSocket() {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -107,19 +95,7 @@ function connectWebSocket() {
             updateStatus('Disconnected');
             console.log('Disconnected from Monty');
 
-            // On HTTPS (public site): the gateway subdomain may not exist yet.
-            // Do not retry -- hide the chat widget and warn in the console.
-            if (isSecure) {
-                console.warn(
-                    'Chat gateway unreachable over HTTPS. ' +
-                    'The subdomain "' + MONTY_PUBLIC_GATEWAY + '" needs a DNS record ' +
-                    'and a Cloudflare tunnel ingress rule before chat will work on the public site.'
-                );
-                hideChatWidget();
-                return;
-            }
-
-            // On HTTP (local dev): retry up to MAX_RECONNECT_ATTEMPTS
+            // Retry up to MAX_RECONNECT_ATTEMPTS (both HTTP and HTTPS)
             if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                 reconnectAttempts++;
                 setTimeout(connectWebSocket, RECONNECT_DELAY);
@@ -129,11 +105,6 @@ function connectWebSocket() {
         ws.onerror = (error) => {
             console.error('WebSocket error:', error);
             updateStatus('Connection error');
-
-            // On HTTPS: suppress further retries -- onclose will handle cleanup
-            if (isSecure) {
-                return;
-            }
         };
 
         ws.onmessage = (event) => {
@@ -147,15 +118,6 @@ function connectWebSocket() {
     } catch (error) {
         console.error('Failed to connect:', error);
         updateStatus('Failed to connect');
-
-        // On HTTPS: hide the widget immediately if the constructor itself throws
-        if (isSecure) {
-            console.warn(
-                'Chat gateway unreachable over HTTPS. ' +
-                'Configure "' + MONTY_PUBLIC_GATEWAY + '" before chat will work publicly.'
-            );
-            hideChatWidget();
-        }
     }
 }
 
