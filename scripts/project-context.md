@@ -62,7 +62,7 @@ Kubernetes cluster provisioned from scratch on AWS using Terraform, following Ke
 
 ## Monty
 
-**GitHub**: https://github.com/Nokodoko/monty
+<!-- NOTE: Monty repo is private/upcoming. Use local path only for ingestion. -->
 
 A powerful local AI agent powered by Ollama with persistent memory and tool-calling capabilities.
 
@@ -77,7 +77,7 @@ A powerful local AI agent powered by Ollama with persistent memory and tool-call
 - Vision input (webcam and screen capture)
 - DeepSeek-R1 prompt-based tool calling support
 
-**Technologies:** Python, Ollama, FastAPI, Pydantic, DeepSeek-R1, Bubble Tea (CLI), numpy (embeddings)
+**Technologies:** Python, Ollama, FastAPI, Pydantic, DeepSeek-R1, httpx, numpy (embeddings)
 
 ---
 

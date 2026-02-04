@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Optional
 
 import psycopg2
-import psycopg2.extras
 import requests
 
 # ---------------------------------------------------------------------------
@@ -66,8 +65,9 @@ PROJECTS = [
         "technologies": ["Terraform", "AWS", "Kubernetes"],
     },
     {
+        # NOTE: Monty repo is private/upcoming -- use local path only
         "name": "Monty",
-        "github_url": "https://github.com/Nokodoko/monty",
+        "github_url": "",
         "readme_path": os.path.expanduser("~/monty/README.md"),
         "description": "Local AI agent powered by Ollama with persistent memory and tool-calling",
         "technologies": ["Python", "Ollama", "FastAPI", "DeepSeek-R1", "Semantic Memory"],
@@ -194,12 +194,14 @@ def chunk_readme(text: str, project: dict) -> list[Chunk]:
 # ---------------------------------------------------------------------------
 
 
-def get_embedding(text: str, ollama_url: str = OLLAMA_URL, model: str = EMBEDDING_MODEL) -> list[float]:
+def get_embedding(text: str, ollama_url: str = None, model: str = None) -> list[float]:
     """
     Generate an embedding vector for the given text using Ollama's API.
 
     Raises RuntimeError if the request fails.
     """
+    ollama_url = ollama_url or OLLAMA_URL
+    model = model or EMBEDDING_MODEL
     url = f"{ollama_url}/api/embed"
     payload = {
         "model": model,
@@ -268,8 +270,13 @@ CLEAR_SQL = "DELETE FROM project_readme_chunks;"
 COUNT_SQL = "SELECT COUNT(*) FROM project_readme_chunks;"
 
 
-def get_db_connection(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, dbname=DB_NAME):
+def get_db_connection(host=None, port=None, user=None, password=None, dbname=None):
     """Create a PostgreSQL connection."""
+    host = host or DB_HOST
+    port = port or DB_PORT
+    user = user or DB_USER
+    password = password or DB_PASSWORD
+    dbname = dbname or DB_NAME
     try:
         conn = psycopg2.connect(
             host=host,
@@ -370,14 +377,13 @@ def ingest_project(project: dict, conn, dry_run: bool = False) -> int:
             )
             chunk.embedding = get_embedding(chunk.content)
             store_chunk(conn, chunk)
+            conn.commit()
             stored += 1
         except RuntimeError as exc:
             logger.error("  Failed to embed/store chunk %d: %s", i, exc)
         except psycopg2.Error as exc:
             logger.error("  Database error storing chunk %d: %s", i, exc)
             conn.rollback()
-
-    conn.commit()
     logger.info("  Stored %d/%d chunks for %s", stored, len(chunks), project["name"])
     return stored
 
@@ -399,7 +405,7 @@ def main():
     parser.add_argument("--db-host", default=DB_HOST, help=f"PostgreSQL host (default: {DB_HOST})")
     parser.add_argument("--db-port", type=int, default=DB_PORT, help=f"PostgreSQL port (default: {DB_PORT})")
     parser.add_argument("--db-user", default=DB_USER, help=f"PostgreSQL user (default: {DB_USER})")
-    parser.add_argument("--db-password", default=DB_PASSWORD, help=f"PostgreSQL password (default: {DB_PASSWORD})")
+    parser.add_argument("--db-password", default=DB_PASSWORD, help="PostgreSQL password (default: ***)")
     parser.add_argument("--db-name", default=DB_NAME, help=f"PostgreSQL database (default: {DB_NAME})")
     parser.add_argument(
         "--ollama-url", default=OLLAMA_URL, help=f"Ollama API URL (default: {OLLAMA_URL})"
