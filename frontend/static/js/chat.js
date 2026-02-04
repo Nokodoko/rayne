@@ -77,6 +77,13 @@ function updateStatus(status, isOnline = false) {
     dot.classList.toggle('offline', !isOnline);
 }
 
+// Hide the chat toggle button entirely (used when gateway is unavailable)
+function hideChatWidget() {
+    const { toggle, container } = getElements();
+    if (toggle) toggle.style.display = 'none';
+    if (container) container.classList.add('hidden');
+}
+
 // Connect to WebSocket
 function connectWebSocket() {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -100,7 +107,19 @@ function connectWebSocket() {
             updateStatus('Disconnected');
             console.log('Disconnected from Monty');
 
-            // Attempt reconnect
+            // On HTTPS (public site): the gateway subdomain may not exist yet.
+            // Do not retry -- hide the chat widget and warn in the console.
+            if (isSecure) {
+                console.warn(
+                    'Chat gateway unreachable over HTTPS. ' +
+                    'The subdomain "' + MONTY_PUBLIC_GATEWAY + '" needs a DNS record ' +
+                    'and a Cloudflare tunnel ingress rule before chat will work on the public site.'
+                );
+                hideChatWidget();
+                return;
+            }
+
+            // On HTTP (local dev): retry up to MAX_RECONNECT_ATTEMPTS
             if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                 reconnectAttempts++;
                 setTimeout(connectWebSocket, RECONNECT_DELAY);
@@ -110,6 +129,11 @@ function connectWebSocket() {
         ws.onerror = (error) => {
             console.error('WebSocket error:', error);
             updateStatus('Connection error');
+
+            // On HTTPS: suppress further retries -- onclose will handle cleanup
+            if (isSecure) {
+                return;
+            }
         };
 
         ws.onmessage = (event) => {
@@ -123,6 +147,15 @@ function connectWebSocket() {
     } catch (error) {
         console.error('Failed to connect:', error);
         updateStatus('Failed to connect');
+
+        // On HTTPS: hide the widget immediately if the constructor itself throws
+        if (isSecure) {
+            console.warn(
+                'Chat gateway unreachable over HTTPS. ' +
+                'Configure "' + MONTY_PUBLIC_GATEWAY + '" before chat will work publicly.'
+            );
+            hideChatWidget();
+        }
     }
 }
 

@@ -28,10 +28,19 @@ data:
     credentials-file: /etc/cloudflared/credentials.json
     no-autoupdate: true
     ingress:
+      # Frontend runs on monty (192.168.50.68), a separate LAN host from
+      # minikube (base). We keep the LAN IP because host.minikube.internal
+      # would only reach the minikube host machine, not monty.
+      # originRequest.connectTimeout gives a fast failure if monty is
+      # unreachable instead of hanging on the default 30s timeout.
       - hostname: n0kos.com
         service: http://192.168.50.68:3000
+        originRequest:
+          connectTimeout: 10s
       - hostname: www.n0kos.com
         service: http://192.168.50.68:3000
+        originRequest:
+          connectTimeout: 10s
       - hostname: webhooks.n0kos.com
         service: http://rayne-service:8080
       - service: http_status:404
