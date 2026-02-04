@@ -821,6 +821,10 @@ agents:
       env:
         - name: DD_SKIP_SSL_VALIDATION
           value: "true"
+        # Allow non-local hosts (e.g. monty at 192.168.50.68) to submit
+        # traces to the agent's APM port (8126).
+        - name: DD_APM_NON_LOCAL_TRAFFIC
+          value: "true"
       envFrom: []
       envDict: {}
       logLevel: ""
@@ -830,7 +834,13 @@ agents:
         periodSeconds: 15
         timeoutSeconds: 5
       securityContext: {}
-      ports: []
+      ports:
+        # Expose APM port on the host so external machines (monty) can
+        # send traces to the Datadog agent running inside minikube.
+        - containerPort: 8126
+          hostPort: 8126
+          name: traceport
+          protocol: TCP
     systemProbe:
       env: []
       envFrom: []
