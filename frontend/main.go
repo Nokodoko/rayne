@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -23,6 +24,7 @@ func main() {
 	mux.Handle("/static/", http.StripPrefix("/static/", fs))
 
 	// Routes
+	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/", handleIndex)
 
 	host := getEnv("SERVER_HOST", "0.0.0.0")
@@ -33,6 +35,12 @@ func main() {
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {

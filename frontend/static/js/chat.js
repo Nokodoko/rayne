@@ -1,8 +1,22 @@
 // Monty Chat WebSocket Client (montyWorldWide - no tools for public safety)
-// Using IP address since browser can't resolve internal hostname
-const MONTY_HOST = '192.168.50.68';
-const MONTY_PORT = '8001';
-const MONTY_WS_URL = `ws://${MONTY_HOST}:${MONTY_PORT}/chat/ws`;
+//
+// Protocol-aware WebSocket connection:
+//   - HTTPS (via Cloudflare tunnel): use wss:// with the public gateway domain
+//   - HTTP  (local dev):             use ws://  with the LAN IP
+//
+// TODO: Add a `gateway.n0kos.com` (or `api.n0kos.com`) subdomain route in the
+//       Cloudflare tunnel config and DNS once the Monty gateway is ready to be
+//       exposed publicly. The tunnel ingress rule should point to
+//       http://192.168.50.68:8001 (same as the LAN target below).
+
+const MONTY_LAN_HOST = '192.168.50.68';
+const MONTY_LAN_PORT = '8001';
+const MONTY_PUBLIC_GATEWAY = 'gateway.n0kos.com';
+
+const isSecure = window.location.protocol === 'https:';
+const MONTY_WS_URL = isSecure
+    ? `wss://${MONTY_PUBLIC_GATEWAY}/chat/ws`
+    : `ws://${MONTY_LAN_HOST}:${MONTY_LAN_PORT}/chat/ws`;
 
 let ws = null;
 let conversationId = null;

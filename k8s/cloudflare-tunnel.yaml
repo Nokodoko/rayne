@@ -1,12 +1,18 @@
-# Cloudflare Named Tunnel - Persistent URL for webhooks
-# Exposes rayne-service at https://webhooks.n0kos.com
+# Cloudflare Named Tunnel - Routes public domains through the tunnel
+# Exposes:
+#   - https://n0kos.com         -> frontend on monty (192.168.50.68:3000)
+#   - https://www.n0kos.com     -> frontend on monty (192.168.50.68:3000)
+#   - https://webhooks.n0kos.com -> rayne-service in minikube (:8080)
 #
 # Setup:
 #   1. Create secret from credentials file:
 #      kubectl create secret generic cloudflare-tunnel-credentials \
 #        --from-file=credentials.json=$HOME/.cloudflared/2d837cb9-22e8-44c7-a8a4-2316157ec9c9.json
 #
-#   2. Apply this manifest:
+#   2. Create DNS records (run once):
+#      ./scripts/cloudflare-dns-setup.sh
+#
+#   3. Apply this manifest:
 #      kubectl apply -f cloudflare-tunnel.yaml
 #
 # Webhook URL: https://webhooks.n0kos.com/v1/webhooks/receive
@@ -22,6 +28,10 @@ data:
     credentials-file: /etc/cloudflared/credentials.json
     no-autoupdate: true
     ingress:
+      - hostname: n0kos.com
+        service: http://192.168.50.68:3000
+      - hostname: www.n0kos.com
+        service: http://192.168.50.68:3000
       - hostname: webhooks.n0kos.com
         service: http://rayne-service:8080
       - service: http_status:404
