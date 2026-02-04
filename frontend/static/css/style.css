@@ -357,8 +357,9 @@ html[data-darkreader-scheme] .gradient-text::before {
   position: absolute;
   bottom: 58px;
   right: 0;
-  width: 280px;
+  width: 300px;
   height: 987px;
+  max-height: calc(100vh - 120px);
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: 12px;
@@ -461,7 +462,7 @@ html[data-darkreader-scheme] .gradient-text::before {
 .message-content {
   padding: 0.5rem 0.75rem;
   border-radius: 10px;
-  font-size: 0.76rem;
+  font-size: 0.8rem;
   line-height: 1.45;
   word-wrap: break-word;
 }
@@ -483,7 +484,7 @@ html[data-darkreader-scheme] .gradient-text::before {
   background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
   border: 1px solid rgba(239, 68, 68, 0.3);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
 }
 
 .message-content code {
@@ -532,14 +533,14 @@ html[data-darkreader-scheme] .gradient-text::before {
 .thinking-text {
   color: var(--text-muted);
   font-style: italic;
-  font-size: 0.72rem;
+  font-size: 0.75rem;
 }
 
 .tool-info {
   margin-top: 0.35rem;
   padding-top: 0.35rem;
   border-top: 1px solid var(--border-color);
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
   display: flex;
   align-items: center;
@@ -590,9 +591,9 @@ html[data-darkreader-scheme] .gradient-text::before {
 }
 
 .chat-send {
-  width: 34px;
-  height: 34px;
-  min-width: 34px;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
   border-radius: 6px;
   background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
   border: none;
@@ -684,7 +685,7 @@ html[data-darkreader-scheme] .gradient-text::before {
   }
 
   .chat-status {
-    font-size: 0.65rem;
+    font-size: 0.68rem;
   }
 
   .chat-messages {
@@ -694,7 +695,7 @@ html[data-darkreader-scheme] .gradient-text::before {
 
   .message-content {
     padding: 0.4rem 0.6rem;
-    font-size: 0.74rem;
+    font-size: 0.78rem;
     border-radius: 8px;
   }
 
@@ -729,8 +730,9 @@ html[data-darkreader-scheme] .gradient-text::before {
   }
 
   .chat-container {
-    width: 300px;
+    width: 280px;
     height: 550px;
+    max-height: calc(100vh - 100px);
     bottom: 58px;
   }
 
@@ -765,6 +767,7 @@ html[data-darkreader-scheme] .gradient-text::before {
   .chat-container {
     width: 340px;
     height: 1100px;
+    max-height: calc(100vh - 120px);
   }
 
   .chat-toggle {
