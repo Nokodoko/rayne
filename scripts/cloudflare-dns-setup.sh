@@ -37,9 +37,11 @@ cloudflared tunnel route dns "${TUNNEL_NAME}" www.n0kos.com
 echo "  -> webhooks.n0kos.com"
 cloudflared tunnel route dns "${TUNNEL_NAME}" webhooks.n0kos.com
 
+# Route the gateway subdomain to the tunnel.
+# Traffic reaches the gateway running on base (192.168.50.179:8001) via
+# the ingress rule in k8s/cloudflare-tunnel.yaml.
+echo "  -> gateway.n0kos.com"
+cloudflared tunnel route dns "${TUNNEL_NAME}" gateway.n0kos.com
+
 echo ""
 echo "Done. Verify with: cloudflared tunnel route list"
-echo ""
-echo "NOTE: Once the Monty gateway is ready to be exposed publicly, run:"
-echo "  cloudflared tunnel route dns ${TUNNEL_NAME} gateway.n0kos.com"
-echo "and add a corresponding ingress rule in k8s/cloudflare-tunnel.yaml."
