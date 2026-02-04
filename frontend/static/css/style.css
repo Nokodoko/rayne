@@ -263,7 +263,21 @@ html[data-darkreader-scheme] .gradient-text::before {
 .project-card p {
   color: var(--text-secondary);
   font-size: 0.95rem;
-  margin-bottom: 1.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.project-github-link {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--accent-primary);
+  margin-bottom: 1rem;
+  font-weight: 500;
+  opacity: 0.85;
+  transition: opacity 0.2s ease;
+}
+
+.project-card:hover .project-github-link {
+  opacity: 1;
 }
 
 .project-tags {
