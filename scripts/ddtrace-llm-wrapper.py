@@ -36,11 +36,8 @@ import functools
 import json
 import logging
 import time
-from typing import AsyncIterator, Optional
 
-from ddtrace import tracer
 from ddtrace.llmobs import LLMObs
-from ddtrace.llmobs.decorators import llm as llm_decorator
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +67,7 @@ def enable_llm_monitoring(
         ml_app=ml_app,
         integrations_enabled=True,
         agentless_enabled=agentless,
+        service=service_name,
     )
     logger.info(
         "Datadog LLM Observability enabled: ml_app=%s, service=%s, agentless=%s",
@@ -88,17 +86,6 @@ def disable_llm_monitoring():
 # ---------------------------------------------------------------------------
 # Span helpers
 # ---------------------------------------------------------------------------
-
-def _messages_to_input_text(messages) -> str:
-    """Convert a list of Message objects to a readable input string."""
-    parts = []
-    for msg in messages:
-        role = getattr(msg, "role", "unknown")
-        content = getattr(msg, "content", "")
-        if content:
-            parts.append(f"[{role}] {content}")
-    return "\n".join(parts)
-
 
 def _format_input_messages(messages) -> list:
     """Format messages into the LLMObs input_data structure."""
@@ -122,86 +109,6 @@ def _format_output_message(response) -> list:
 # ---------------------------------------------------------------------------
 # Instrumented wrappers
 # ---------------------------------------------------------------------------
-
-def _wrap_chat_complete(original_method):
-    """
-    Wrap OllamaClient.chat_complete with LLM Observability tracing.
-
-    Creates a span of kind 'llm' that captures model, input/output,
-    token counts, and latency.
-    """
-
-    @functools.wraps(original_method)
-    async def wrapper(self, model, messages, tools=None, think=None, options=None):
-        span = LLMObs.llm(
-            model_name=model,
-            model_provider="ollama",
-            name="ollama.chat_complete",
-        )
-        start_time = time.monotonic()
-        try:
-            # Annotate input
-            LLMObs.annotate(
-                span=span,
-                input_data=_format_input_messages(messages),
-                metadata={
-                    "model": model,
-                    "tools_count": len(tools) if tools else 0,
-                    "think_enabled": bool(think),
-                    "options": json.dumps(options) if options else "{}",
-                },
-            )
-
-            # Execute the original call
-            response = await original_method(model, messages, tools=tools, think=think, options=options)
-
-            # Extract token metrics from the Ollama response
-            prompt_tokens = getattr(response, "prompt_eval_count", None) or 0
-            completion_tokens = getattr(response, "eval_count", None) or 0
-            total_duration_ns = getattr(response, "total_duration", None) or 0
-
-            # Annotate output
-            LLMObs.annotate(
-                span=span,
-                output_data=_format_output_message(response),
-                metrics={
-                    "input_tokens": prompt_tokens,
-                    "output_tokens": completion_tokens,
-                    "total_tokens": prompt_tokens + completion_tokens,
-                },
-                metadata={
-                    "ollama_total_duration_ns": total_duration_ns,
-                    "ollama_load_duration_ns": getattr(response, "load_duration", 0) or 0,
-                    "ollama_prompt_eval_duration_ns": getattr(response, "prompt_eval_duration", 0) or 0,
-                    "ollama_eval_duration_ns": getattr(response, "eval_duration", 0) or 0,
-                    "done_reason": getattr(response, "done_reason", ""),
-                },
-            )
-
-            elapsed = time.monotonic() - start_time
-            logger.debug(
-                "LLM call traced: model=%s, prompt_tokens=%d, completion_tokens=%d, latency=%.3fs",
-                model,
-                prompt_tokens,
-                completion_tokens,
-                elapsed,
-            )
-
-            return response
-
-        except Exception as exc:
-            # Tag the span with the error
-            LLMObs.annotate(
-                span=span,
-                metadata={"error": str(exc), "error_type": type(exc).__name__},
-            )
-            raise
-
-        finally:
-            span.finish()
-
-    return wrapper
-
 
 def _wrap_chat(original_method):
     """
@@ -242,9 +149,11 @@ def _wrap_chat(original_method):
 
         accumulated_content = []
         final_response = None
+        completed = False
 
         try:
             async for chunk in original_method(
+                self,
                 model,
                 messages,
                 tools=tools,
@@ -262,33 +171,7 @@ def _wrap_chat(original_method):
 
                 yield chunk
 
-            # After iteration completes, annotate final metrics
-            output_text = "".join(accumulated_content)
-            prompt_tokens = 0
-            completion_tokens = 0
-
-            if final_response is not None:
-                prompt_tokens = getattr(final_response, "prompt_eval_count", None) or 0
-                completion_tokens = getattr(final_response, "eval_count", None) or 0
-
-            LLMObs.annotate(
-                span=span,
-                output_data=[{"role": "assistant", "content": output_text}],
-                metrics={
-                    "input_tokens": prompt_tokens,
-                    "output_tokens": completion_tokens,
-                    "total_tokens": prompt_tokens + completion_tokens,
-                },
-            )
-
-            elapsed = time.monotonic() - start_time
-            logger.debug(
-                "LLM stream traced: model=%s, prompt_tokens=%d, completion_tokens=%d, latency=%.3fs",
-                model,
-                prompt_tokens,
-                completion_tokens,
-                elapsed,
-            )
+            completed = True
 
         except Exception as exc:
             LLMObs.annotate(
@@ -298,6 +181,34 @@ def _wrap_chat(original_method):
             raise
 
         finally:
+            if completed or accumulated_content:
+                output_text = "".join(accumulated_content)
+                prompt_tokens = 0
+                completion_tokens = 0
+
+                if final_response is not None:
+                    prompt_tokens = getattr(final_response, "prompt_eval_count", None) or 0
+                    completion_tokens = getattr(final_response, "eval_count", None) or 0
+
+                LLMObs.annotate(
+                    span=span,
+                    output_data=[{"role": "assistant", "content": output_text}],
+                    metrics={
+                        "input_tokens": prompt_tokens,
+                        "output_tokens": completion_tokens,
+                        "total_tokens": prompt_tokens + completion_tokens,
+                    },
+                )
+
+                elapsed = time.monotonic() - start_time
+                logger.debug(
+                    "LLM stream traced: model=%s, prompt_tokens=%d, completion_tokens=%d, latency=%.3fs",
+                    model,
+                    prompt_tokens,
+                    completion_tokens,
+                    elapsed,
+                )
+
             span.finish()
 
     return wrapper
@@ -328,7 +239,7 @@ def _wrap_generate(original_method):
 
         try:
             async for chunk in original_method(
-                model, prompt, stream=stream, images=images, options=options
+                self, model, prompt, stream=stream, images=images, options=options
             ):
                 resp_text = getattr(chunk, "response", "")
                 if resp_text:
@@ -399,7 +310,7 @@ def _wrap_embed(original_method):
         )
 
         try:
-            result = await original_method(model, input, options=options)
+            result = await original_method(self, model, input, options=options)
 
             embedding_count = len(result.get("embeddings", []))
             LLMObs.annotate(
@@ -442,9 +353,12 @@ def instrument_ollama_client(client):
 
     This monkey-patches the following methods:
         - chat          (streaming)
-        - chat_complete (non-streaming)
         - generate      (streaming)
         - embed         (embeddings)
+
+    Note: chat_complete is intentionally NOT wrapped because it internally
+    calls self.chat(), which is already wrapped. Wrapping both would create
+    duplicate spans.
 
     Args:
         client: An OllamaClient instance from agent.ollama.
@@ -455,13 +369,6 @@ def instrument_ollama_client(client):
     import types
 
     # Bind the wrapped methods to the client instance
-    client.chat_complete = types.MethodType(
-        _wrap_chat_complete(client.chat_complete.__func__
-                            if hasattr(client.chat_complete, "__func__")
-                            else client.chat_complete),
-        client,
-    )
-
     client.chat = types.MethodType(
         _wrap_chat(client.chat.__func__
                    if hasattr(client.chat, "__func__")

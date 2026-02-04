@@ -45,7 +45,48 @@ warn()  { echo -e "\033[1;33m[WARN]\033[0m  $*"; }
 err()   { echo -e "\033[1;31m[ERROR]\033[0m $*"; exit 1; }
 
 # ---------------------------------------------------------------------------
+# DD_AGENT_HOST reachability through minikube
+# ---------------------------------------------------------------------------
+# If the Datadog agent runs inside minikube and monty is external, the agent's
+# APM port (8126) must be reachable from the monty host. Common approaches:
+#
+#   Option A: minikube tunnel
+#     Run `minikube tunnel` in a separate terminal. This exposes NodePort and
+#     LoadBalancer services on the host network.
+#
+#   Option B: kubectl port-forward
+#     kubectl port-forward svc/datadog-agent 8126:8126 --address 0.0.0.0
+#     This forwards traffic from the minikube host's 8126 to the agent pod.
+#
+#   Option C: hostPort (current config)
+#     The helm values set hostPort: 8126 on the trace-agent container, which
+#     binds the port on the minikube node itself. Combined with
+#     DD_APM_NON_LOCAL_TRAFFIC=true this allows external hosts to connect
+#     directly to the minikube VM IP.
+#
+# Whichever method you choose, ensure monty can reach DD_AGENT_HOST:8126.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Pre-flight: Check DD agent reachability from this machine
+# ---------------------------------------------------------------------------
+info "Pre-flight: checking if Datadog agent is reachable at ${DD_AGENT_HOST}:${DD_TRACE_AGENT_PORT}..."
+if curl -sf --max-time 5 -o /dev/null "http://${DD_AGENT_HOST}:${DD_TRACE_AGENT_PORT}/info" 2>/dev/null; then
+    ok "Datadog agent is reachable from this host."
+else
+    warn "Cannot reach Datadog agent at ${DD_AGENT_HOST}:${DD_TRACE_AGENT_PORT} from this host."
+    warn "If the agent runs in minikube, you may need one of:"
+    warn "  - minikube tunnel"
+    warn "  - kubectl port-forward svc/datadog-agent 8126:8126 --address 0.0.0.0"
+    warn "Continuing deployment anyway..."
+fi
+
+# ---------------------------------------------------------------------------
 # Step 1: Install ddtrace on monty
+# ---------------------------------------------------------------------------
+# Note: If monty uses a virtualenv, activate it first or set MONTY_PROJECT_DIR
+# to the venv root. If installing globally on a system-managed Python, you may
+# need to add --break-system-packages to the pip command.
 # ---------------------------------------------------------------------------
 info "Installing ddtrace on ${MONTY_SSH}..."
 ssh "${MONTY_SSH}" "pip install --upgrade ddtrace 2>&1" || {

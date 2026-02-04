@@ -77,30 +77,39 @@ AGENT_INFO=$(curl -sf --max-time 10 "${DD_AGENT_URL}/info" 2>/dev/null) && {
 # ---------------------------------------------------------------------------
 # Test 3: Send a test chat message to the monty gateway
 # ---------------------------------------------------------------------------
-info "Test 3: Sending a test chat message to generate an LLM trace ..."
+# The monty gateway exposes two chat interfaces:
+#   - REST:      POST /api/chat  (stream=false for JSON, stream=true for SSE)
+#   - WebSocket: /ws/chat        (real-time bidirectional streaming)
+#
+# This test uses the REST endpoint with stream=false since curl cannot
+# interact with WebSocket. For WebSocket testing, use websocat or wscat:
+#   websocat ws://${MONTY_HOST}:${MONTY_PORT}/ws/chat
+# ---------------------------------------------------------------------------
+info "Test 3: Sending a test chat message via POST /api/chat (non-streaming) ..."
 
 TEST_MESSAGE="Hello, this is a Datadog LLM monitoring test. Please respond with a short greeting."
 
-# Try the non-streaming endpoint first (easier to capture response)
 CHAT_RESPONSE=$(curl -sf --max-time 120 \
     -X POST "${MONTY_GATEWAY}/api/chat" \
     -H "Content-Type: application/json" \
     -d "{\"message\": \"${TEST_MESSAGE}\", \"stream\": false}" \
     2>/dev/null) && {
-    check_pass "Chat request succeeded."
+    check_pass "Chat request succeeded (POST /api/chat, stream=false)."
     info "Response preview: $(echo "${CHAT_RESPONSE}" | head -c 200)..."
 } || {
-    # Fall back to streaming endpoint
-    warn "Non-streaming request failed, trying streaming endpoint..."
+    # Fall back to streaming (SSE) variant
+    warn "Non-streaming request failed, trying stream=true (SSE) ..."
     CHAT_RESPONSE=$(curl -sf --max-time 120 \
         -X POST "${MONTY_GATEWAY}/api/chat" \
         -H "Content-Type: application/json" \
         -d "{\"message\": \"${TEST_MESSAGE}\", \"stream\": true}" \
         2>/dev/null) && {
-        check_pass "Streaming chat request succeeded."
+        check_pass "Streaming chat request succeeded (SSE)."
         info "Response preview: $(echo "${CHAT_RESPONSE}" | head -c 200)..."
     } || {
-        check_fail "Chat request failed. Is the monty gateway running?"
+        check_fail "Chat request failed at POST /api/chat. Is the monty gateway running?"
+        warn "Note: The monty gateway also supports WebSocket at /ws/chat"
+        warn "but curl cannot test WebSocket endpoints. Use websocat or wscat instead."
     }
 }
 

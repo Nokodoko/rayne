@@ -837,6 +837,12 @@ agents:
       ports:
         # Expose APM port on the host so external machines (monty) can
         # send traces to the Datadog agent running inside minikube.
+        #
+        # NOTE: hostPort is intentional for the single-node minikube
+        # development scenario. In a multi-node cluster, hostPort binds
+        # only on the node where the pod is scheduled, so external clients
+        # would need to target that specific node. For multi-node setups,
+        # use a NodePort Service, LoadBalancer, or HostNetwork instead.
         - containerPort: 8126
           hostPort: 8126
           name: traceport
