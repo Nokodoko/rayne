@@ -19,6 +19,39 @@ greenColor() { gum style --foreground "#00FF00" "$1"; }
 purpleColor() { gum style --foreground "#9400D3" "$1"; }
 
 #=============================================================================
+# HOST DATADOG AGENT APM CONFIGURATION (for docker-compose users)
+#=============================================================================
+# This function ensures the host Datadog agent is configured to accept
+# non-local APM traffic when running with docker-compose. This is required
+# because Docker containers access the host agent via host.docker.internal
+# which is considered non-local traffic.
+#
+# Requirements for docker-compose with host Datadog agent:
+# 1. /etc/datadog-agent/datadog.yaml must have:
+#    apm_config:
+#      apm_non_local_traffic: true
+# 2. The Datadog agent must be running: sudo systemctl status datadog-agent
+# 3. Port 8126 must be listening: ss -tlnp | grep 8126
+#
+# Note: If minikube isn't running, comment out kubernetes-related config lines
+# like extra_listeners, kubernetes_kubelet_host to prevent agent startup errors.
+ensure_host_agent_apm() {
+    if [ -f /etc/datadog-agent/datadog.yaml ]; then
+        if ! grep -q "apm_non_local_traffic: true" /etc/datadog-agent/datadog.yaml; then
+            echo "Configuring Datadog agent for non-local APM traffic..."
+            echo -e "\napm_config:\n  apm_non_local_traffic: true" | sudo tee -a /etc/datadog-agent/datadog.yaml
+            sudo systemctl restart datadog-agent
+            echo "Host Datadog agent configured and restarted"
+        else
+            echo "Host Datadog agent already configured for non-local APM traffic"
+        fi
+    else
+        echo "Note: Host Datadog agent not found at /etc/datadog-agent/datadog.yaml"
+        echo "      APM will use in-cluster Datadog agent when minikube is running"
+    fi
+}
+
+#=============================================================================
 # CHECK DEPENDENCIES
 #=============================================================================
 if ! command -v gum &> /dev/null; then

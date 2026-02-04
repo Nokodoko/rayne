@@ -1,0 +1,18 @@
+{
+  "name": "rayne-traffic-generator",
+  "version": "1.0.0",
+  "description": "Traffic generators for Rayne RUM testing",
+  "scripts": {
+    "traffic": "node headless-traffic-generator.js",
+    "traffic:help": "node headless-traffic-generator.js --help",
+    "traffic:verbose": "node headless-traffic-generator.js --verbose",
+    "traffic:visible": "node headless-traffic-generator.js --no-headless --sessions 3 --verbose",
+    "traffic:continuous": "node headless-traffic-generator.js --continuous --verbose",
+    "traffic:bulk": "node headless-traffic-generator.js --sessions 50 --concurrent 4"
+  },
+  "dependencies": {
+    "puppeteer": "^23.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
