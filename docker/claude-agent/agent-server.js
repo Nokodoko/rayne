@@ -20,7 +20,7 @@ const RCA_COLLECTION = 'rca_analyses';
 // Construct API URL from DD_SITE (follows Datadog SDK convention)
 const DD_API_KEY = process.env.DD_API_KEY;
 const DD_APP_KEY = process.env.DD_APP_KEY;
-const DD_SITE = process.env.DD_SITE || 'ddog-gov.com';
+const DD_SITE = process.env.DD_SITE || 'datadoghq.com';
 const DD_API_URL = `https://api.${DD_SITE}`;
 const DD_APP_URL = `https://app.${DD_SITE}`;  // For notebook hyperlinks
 
