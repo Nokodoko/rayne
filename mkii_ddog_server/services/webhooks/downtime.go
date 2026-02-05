@@ -20,7 +20,7 @@ type DowntimeService struct {
 // NewDowntimeService creates a new downtime service
 func NewDowntimeService() *DowntimeService {
 	return &DowntimeService{
-		apiURL: "https://api.ddog-gov.com/api/v2/downtime",
+		apiURL: "https://api.datadoghq.com/api/v2/downtime",
 	}
 }
 

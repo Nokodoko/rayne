@@ -43,7 +43,7 @@ func (s *Storage) InitTables() error {
 		org_name VARCHAR(255),
 		api_key VARCHAR(255) NOT NULL,
 		app_key VARCHAR(255) NOT NULL,
-		base_url VARCHAR(255) DEFAULT 'https://api.ddog-gov.com',
+		base_url VARCHAR(255) DEFAULT 'https://api.datadoghq.com',
 		is_default BOOLEAN DEFAULT false,
 		active BOOLEAN DEFAULT true,
 		created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -240,7 +240,7 @@ func (s *Storage) GetAll() ([]Account, error) {
 func (s *Storage) Create(account Account) (*Account, error) {
 	// Set defaults
 	if account.BaseURL == "" {
-		account.BaseURL = BaseURLGov
+		account.BaseURL = BaseURLCommercial
 	}
 
 	query := `

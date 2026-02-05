@@ -8,8 +8,8 @@ import (
 var apiKeyName string = "DD_API_KEY"
 var appKeyName string = "DD_APP_KEY"
 
-// DefaultBaseURL is the default Datadog API endpoint (US Government)
-const DefaultBaseURL = "https://api.ddog-gov.com"
+// DefaultBaseURL is the default Datadog API endpoint (US Commercial)
+const DefaultBaseURL = "https://api.datadoghq.com"
 
 func Api() string {
 	_, ok := os.LookupEnv(apiKeyName)

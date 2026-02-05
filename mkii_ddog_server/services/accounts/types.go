@@ -20,7 +20,7 @@ type Account struct {
 	OrgName   string    `json:"org_name"`   // Display name
 	APIKey    string    `json:"-"`          // Never exposed in JSON
 	AppKey    string    `json:"-"`          // Never exposed in JSON
-	BaseURL   string    `json:"base_url"`   // Default: https://api.ddog-gov.com
+	BaseURL   string    `json:"base_url"`   // Default: https://api.datadoghq.com
 	IsDefault bool      `json:"is_default"`
 	Active    bool      `json:"active"`
 	CreatedAt time.Time `json:"created_at"`
@@ -31,7 +31,7 @@ type Account struct {
 type Credentials struct {
 	APIKey  string
 	AppKey  string
-	BaseURL string // e.g., "https://api.ddog-gov.com" or "https://api.datadoghq.com"
+	BaseURL string // e.g., "https://api.datadoghq.com" (commercial) or "https://api.ddog-gov.com" (gov)
 }
 
 // ToCredentials converts an Account to Credentials
@@ -74,7 +74,7 @@ type CreateAccountRequest struct {
 	OrgName string `json:"org_name,omitempty"`
 	APIKey  string `json:"api_key"`
 	AppKey  string `json:"app_key"`
-	BaseURL string `json:"base_url,omitempty"` // Defaults to BaseURLGov
+	BaseURL string `json:"base_url,omitempty"` // Defaults to BaseURLCommercial
 }
 
 // UpdateAccountRequest represents a request to update an account
