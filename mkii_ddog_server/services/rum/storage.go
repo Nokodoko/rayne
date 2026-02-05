@@ -228,7 +228,7 @@ func (s *Storage) StoreEvent(event RUMEvent) error {
 	)
 
 	// Increment page views if this is a view event
-	if event.EventType == "view" {
+	if event.EventType == "view" || event.EventType == "page_view" {
 		s.IncrementSessionPageViews(event.SessionID)
 		s.IncrementVisitorViews(event.VisitorUUID)
 	}
@@ -336,7 +336,7 @@ func (s *Storage) GetAnalytics(from, to time.Time) (*VisitorAnalytics, error) {
 	rows, err := s.db.Query(`
 		SELECT page_url, COALESCE(page_title, ''), COUNT(*) as views
 		FROM rum_events
-		WHERE event_type = 'view' AND timestamp >= $1 AND timestamp <= $2
+		WHERE event_type IN ('view', 'page_view') AND timestamp >= $1 AND timestamp <= $2
 		GROUP BY page_url, page_title
 		ORDER BY views DESC
 		LIMIT 10

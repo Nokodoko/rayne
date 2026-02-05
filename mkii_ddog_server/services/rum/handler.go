@@ -97,6 +97,7 @@ func (h *Handler) TrackEvent(w http.ResponseWriter, r *http.Request) (int, any) 
 
 	// Validate event type
 	validTypes := map[string]bool{
+		"page_view": true,
 		"view":      true,
 		"action":    true,
 		"error":     true,
