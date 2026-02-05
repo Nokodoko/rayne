@@ -18,6 +18,7 @@ type Config struct {
 	DDEnv       string
 	DDVersion   string
 	DDAgentHost string
+	DDSite      string
 }
 
 var Envs = initConfig()
@@ -37,5 +38,6 @@ func initConfig() Config {
 		DDEnv:       utils.GetEnv("DD_ENV", "development"),
 		DDVersion:   utils.GetEnv("DD_VERSION", "1.0.0"),
 		DDAgentHost: utils.GetEnv("DD_AGENT_HOST", "localhost"),
+		DDSite:      utils.GetEnv("DD_SITE", "datadoghq.com"),
 	}
 }
