@@ -95,6 +95,8 @@ spec:
               value: "staging"
             - name: DD_VERSION
               value: "2.0.1"
+            - name: DD_SITE
+              value: "datadoghq.com"
             # Claude Agent sidecar URL
             - name: CLAUDE_AGENT_URL
               value: "http://localhost:9000"
