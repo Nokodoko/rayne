@@ -19,6 +19,8 @@
         SESSION_START: 'rayne_session_start'
     };
 
+    // NOTE: applicationId and clientToken below are for the commercial Datadog cloud (datadoghq.com)
+    // To use different credentials, these values must be updated here or made configurable via the backend
     const RUM_CONFIG = {
         applicationId: '6d730a61-be91-4cec-80fb-80848bb29d14',
         clientToken: 'pub902cdeb5b6dd38e7179c22ec46cf6112',
@@ -36,7 +38,8 @@
         compressIntakeRequests: true,
         allowedTracingUrls: [
             { match: /localhost/, propagatorTypes: ['datadog'] },
-            { match: /rayne/, propagatorTypes: ['datadog'] }
+            { match: /rayne/, propagatorTypes: ['datadog'] },
+            { match: /n0kos\.com/, propagatorTypes: ['datadog'] }
         ]
     };
 
