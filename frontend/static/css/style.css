@@ -371,8 +371,8 @@ html[data-darkreader-scheme] .gradient-text::before {
   display: block;
   text-align: center;
   font-size: 0.7rem;
-  font-weight: 500;
-  color: var(--text-primary);
+  font-weight: 700;
+  color: var(--accent-primary);
   text-shadow: 0 0 8px var(--accent-glow);
   margin-top: 0.35rem;
   pointer-events: none;
