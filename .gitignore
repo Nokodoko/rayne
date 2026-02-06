@@ -2,3 +2,8 @@ CLAUDE.md
 dd_lib
 docs/
 FRONTEND-DEPLOY-GUIDE.md
+node_modules/
+__pycache__/
+*.pyc
+bin/
+*.exe
