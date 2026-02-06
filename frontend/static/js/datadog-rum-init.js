@@ -22,11 +22,11 @@
     // NOTE: applicationId and clientToken below are for the commercial Datadog cloud (datadoghq.com)
     // To use different credentials, these values must be updated here or made configurable via the backend
     const RUM_CONFIG = {
-        applicationId: '6d730a61-be91-4cec-80fb-80848bb29d14',
-        clientToken: 'pub902cdeb5b6dd38e7179c22ec46cf6112',
-        site: 'datadoghq.com',
+        applicationId: '41475713-e2a0-4caf-a79e-cf010a754b5f',
+        clientToken: 'pubdda62e1166d6508966e2265fc0e251fc',
+        site: 'ddog-gov.com',
         service: 'rayne-frontend',
-        env: 'staging',
+        env: 'development',
         version: '2.1.0',
         sessionSampleRate: 100,
         sessionReplaySampleRate: 20,
@@ -43,6 +43,14 @@
         ]
     };
 
+    function generateUUID() {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) return generateUUID();
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            var r = (Math.random() * 16) | 0;
+            return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+        });
+    }
+
     function getApiBase() {
         return window.RAYNE_API_BASE || 'http://localhost:8080';
     }
@@ -55,7 +63,7 @@
             }
 
             const script = document.createElement('script');
-            script.src = 'https://www.datadoghq-browser-agent.com/us1/v6/datadog-rum.js';
+            script.src = 'https://www.datadoghq-browser-agent.com/datadog-rum-v6.js';
             script.async = true;
             script.onload = () => {
                 if (window.DD_RUM) {
@@ -99,8 +107,8 @@
             return data;
         } catch (error) {
             console.warn('Failed to init visitor with backend, using local UUID:', error);
-            const localUuid = existingUuid || crypto.randomUUID();
-            const localSessionId = existingSessionId || crypto.randomUUID();
+            const localUuid = existingUuid || generateUUID();
+            const localSessionId = existingSessionId || generateUUID();
 
             localStorage.setItem(STORAGE_KEYS.VISITOR_UUID, localUuid);
             localStorage.setItem(STORAGE_KEYS.SESSION_ID, localSessionId);

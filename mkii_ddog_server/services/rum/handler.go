@@ -4,12 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
 
 // Handler handles RUM HTTP requests
@@ -20,6 +22,17 @@ type Handler struct {
 // NewHandler creates a new RUM handler
 func NewHandler(storage *Storage) *Handler {
 	return &Handler{storage: storage}
+}
+
+// getTraceContext extracts trace_id and span_id from the request context
+// This allows RUM sessions to be tied to APM traces
+func getTraceContext(r *http.Request) (traceID, spanID string) {
+	span, ok := tracer.SpanFromContext(r.Context())
+	if !ok || span == nil {
+		return "", ""
+	}
+	ctx := span.Context()
+	return fmt.Sprintf("%d", ctx.TraceID()), fmt.Sprintf("%d", ctx.SpanID())
 }
 
 // InitVisitor initializes a visitor session
@@ -36,6 +49,19 @@ func (h *Handler) InitVisitor(w http.ResponseWriter, r *http.Request) (int, any)
 	if req.UserAgent == "" {
 		req.UserAgent = r.UserAgent()
 	}
+
+	// Support visitor_uuid as alias for existing_uuid
+	if req.ExistingUUID == "" && req.VisitorUUID != "" {
+		req.ExistingUUID = req.VisitorUUID
+	}
+
+	// Support page_url as alias for entry_page
+	if req.EntryPage == "" && req.PageURL != "" {
+		req.EntryPage = req.PageURL
+	}
+
+	// Get APM trace context for RUM-APM correlation
+	traceID, spanID := getTraceContext(r)
 
 	// Check for existing visitor
 	if req.ExistingUUID != "" {
@@ -57,6 +83,8 @@ func (h *Handler) InitVisitor(w http.ResponseWriter, r *http.Request) (int, any)
 				SessionID:   sessionID,
 				IsNew:       false,
 				Message:     "Welcome back!",
+				TraceID:     traceID,
+				SpanID:      spanID,
 			}
 		}
 	}
@@ -81,6 +109,8 @@ func (h *Handler) InitVisitor(w http.ResponseWriter, r *http.Request) (int, any)
 		SessionID:   sessionID,
 		IsNew:       true,
 		Message:     "Welcome, new visitor!",
+		TraceID:     traceID,
+		SpanID:      spanID,
 	}
 }
 
@@ -108,6 +138,26 @@ func (h *Handler) TrackEvent(w http.ResponseWriter, r *http.Request) (int, any) 
 		return http.StatusBadRequest, map[string]string{"error": "invalid event_type"}
 	}
 
+	// Get APM trace context for RUM-APM correlation
+	traceID, spanID := getTraceContext(r)
+
+	// Include trace context in metadata if provided in request or from APM
+	if req.Metadata == nil {
+		req.Metadata = make(map[string]interface{})
+	}
+	if req.TraceID != "" {
+		req.Metadata["frontend_trace_id"] = req.TraceID
+	}
+	if req.SpanID != "" {
+		req.Metadata["frontend_span_id"] = req.SpanID
+	}
+	if traceID != "" {
+		req.Metadata["backend_trace_id"] = traceID
+	}
+	if spanID != "" {
+		req.Metadata["backend_span_id"] = spanID
+	}
+
 	event := RUMEvent{
 		VisitorUUID: req.VisitorUUID,
 		SessionID:   req.SessionID,
@@ -126,7 +176,11 @@ func (h *Handler) TrackEvent(w http.ResponseWriter, r *http.Request) (int, any) 
 		return http.StatusInternalServerError, map[string]string{"error": "failed to store event"}
 	}
 
-	return http.StatusAccepted, map[string]string{"status": "event recorded"}
+	return http.StatusAccepted, TrackEventResponse{
+		Status:  "event recorded",
+		TraceID: traceID,
+		SpanID:  spanID,
+	}
 }
 
 // EndSession ends a visitor session

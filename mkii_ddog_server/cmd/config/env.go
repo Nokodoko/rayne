@@ -36,7 +36,7 @@ func initConfig() Config {
 		// APM Configuration
 		DDService:   utils.GetEnv("DD_SERVICE", "rayne"),
 		DDEnv:       utils.GetEnv("DD_ENV", "development"),
-		DDVersion:   utils.GetEnv("DD_VERSION", "1.0.0"),
+		DDVersion:   utils.GetEnv("DD_VERSION", "2.1.0"),
 		DDAgentHost: utils.GetEnv("DD_AGENT_HOST", "localhost"),
 		DDSite:      utils.GetEnv("DD_SITE", "datadoghq.com"),
 	}

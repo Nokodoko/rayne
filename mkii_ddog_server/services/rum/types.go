@@ -53,9 +53,11 @@ type RUMEvent struct {
 // VisitorInitRequest is sent when initializing a visitor
 type VisitorInitRequest struct {
 	ExistingUUID string `json:"existing_uuid,omitempty"`
+	VisitorUUID  string `json:"visitor_uuid,omitempty"` // Alias for existing_uuid
 	UserAgent    string `json:"user_agent,omitempty"`
 	Referrer     string `json:"referrer,omitempty"`
 	EntryPage    string `json:"entry_page,omitempty"`
+	PageURL      string `json:"page_url,omitempty"` // Alias for entry_page
 }
 
 // VisitorInitResponse is returned when initializing a visitor
@@ -64,6 +66,9 @@ type VisitorInitResponse struct {
 	SessionID   string `json:"session_id"`
 	IsNew       bool   `json:"is_new"`
 	Message     string `json:"message,omitempty"`
+	// APM trace context - allows RUM to be tied to backend traces
+	TraceID string `json:"trace_id,omitempty"`
+	SpanID  string `json:"span_id,omitempty"`
 }
 
 // TrackEventRequest is sent when tracking a RUM event
@@ -78,6 +83,16 @@ type TrackEventRequest struct {
 	ErrorMsg    string                 `json:"error_message,omitempty"`
 	Duration    int64                  `json:"duration_ms,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+	// Optional: pass trace context from frontend to tie to backend traces
+	TraceID string `json:"trace_id,omitempty"`
+	SpanID  string `json:"span_id,omitempty"`
+}
+
+// TrackEventResponse is returned when tracking a RUM event
+type TrackEventResponse struct {
+	Status  string `json:"status"`
+	TraceID string `json:"trace_id,omitempty"`
+	SpanID  string `json:"span_id,omitempty"`
 }
 
 // SessionEndRequest is sent when ending a session

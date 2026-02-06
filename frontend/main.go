@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"n0kos.com/frontend/templates"
 )
@@ -21,7 +22,7 @@ func main() {
 
 	// Serve static files
 	fs := http.FileServer(http.Dir("static"))
-	mux.Handle("/static/", http.StripPrefix("/static/", fs))
+	mux.Handle("/static/", http.StripPrefix("/static/", cacheControlHandler(fs)))
 
 	// Routes
 	mux.HandleFunc("/health", handleHealth)
@@ -41,6 +42,15 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+}
+
+func cacheControlHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".js") {
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {

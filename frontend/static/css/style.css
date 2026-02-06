@@ -367,6 +367,22 @@ html[data-darkreader-scheme] .gradient-text::before {
   color: white;
 }
 
+.chat-label {
+  display: block;
+  text-align: center;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-shadow: 0 0 8px var(--accent-glow);
+  margin-top: 0.35rem;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.chat-widget.active .chat-label {
+  display: none;
+}
+
 .chat-container {
   position: absolute;
   bottom: 58px;
@@ -675,6 +691,10 @@ html[data-darkreader-scheme] .gradient-text::before {
     height: 18px;
   }
 
+  .chat-label {
+    font-size: 0.6rem;
+  }
+
   .chat-container {
     width: calc(100vw - 1.5rem);
     height: calc(100vh - 80px);
@@ -792,6 +812,10 @@ html[data-darkreader-scheme] .gradient-text::before {
   .chat-toggle svg {
     width: 22px;
     height: 22px;
+  }
+
+  .chat-label {
+    font-size: 0.75rem;
   }
 
   .chat-avatar {

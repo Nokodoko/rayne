@@ -38,17 +38,39 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// corsMiddleware adds CORS headers for cross-origin requests
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-datadog-trace-id, x-datadog-parent-id, x-datadog-sampling-priority, x-datadog-origin, x-datadog-tags")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // traceMiddleware creates APM spans for all requests and properly tags errors
 func traceMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Start a new span for this request
-		span, ctx := tracer.StartSpanFromContext(r.Context(), "http.request",
+		opts := []tracer.StartSpanOption{
 			tracer.ServiceName("rayne"),
-			tracer.ResourceName(r.Method+" "+r.URL.Path),
+			tracer.ResourceName(r.Method + " " + r.URL.Path),
 			tracer.Tag(ext.SpanType, ext.SpanTypeWeb),
 			tracer.Tag(ext.HTTPMethod, r.Method),
 			tracer.Tag(ext.HTTPURL, r.URL.Path),
-		)
+		}
+
+		// Extract trace context from incoming request headers (RUM SDK injects these)
+		if sctx, err := tracer.Extract(tracer.HTTPHeadersCarrier(r.Header)); err == nil {
+			opts = append(opts, tracer.ChildOf(sctx))
+		}
+
+		span, ctx := tracer.StartSpanFromContext(r.Context(), "http.request", opts...)
 		defer span.Finish()
 
 		// Wrap the response writer to capture status code
@@ -291,9 +313,9 @@ func (d *DDogServer) Run(ctx context.Context) error {
 		  Accounts:      %v (cached by name)
 	`, d.addr, dispatcherConfig.Workers, dispatcherConfig.QueueSize, agentOrchConfig.MaxConcurrent, accountStats["cached_by_name"])
 
-	// Wrap router with custom tracing middleware that properly propagates spans
+	// Wrap router with CORS and custom tracing middleware that properly propagates spans
 	// and tags errors for APM visibility
-	tracedRouter := traceMiddleware(router)
+	tracedRouter := corsMiddleware(traceMiddleware(router))
 
 	// Create server with context-aware shutdown
 	server := &http.Server{

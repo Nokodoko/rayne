@@ -6,7 +6,6 @@ instance running llama3.2:latest. No multi-agent orchestration, no RAG,
 no gRPC -- just a direct Ollama-to-WebSocket streaming bridge.
 """
 
-import asyncio
 import json
 import os
 import uuid
@@ -14,8 +13,13 @@ from contextlib import asynccontextmanager
 
 import httpx
 import uvicorn
+from ddtrace import patch
+from ddtrace.llmobs import LLMObs
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+
+# Patch before FastAPI app is created so trace middleware is injected
+patch(fastapi=True, httpx=True)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -120,8 +124,18 @@ async def stream_ollama(
     }
 
     full_response = ""
+    span = None
+    prompt_tokens = 0
+    completion_tokens = 0
 
     try:
+        span = LLMObs.llm(model_name=OLLAMA_MODEL, model_provider="ollama", name="ollama.generate")
+        LLMObs.annotate(
+            span=span,
+            input_data=[{"role": "user", "content": user_message}],
+            metadata={"model": OLLAMA_MODEL, "streaming": True, "conversation_id": conversation_id},
+        )
+
         async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
             async with client.stream(
                 "POST",
@@ -154,10 +168,22 @@ async def stream_ollama(
 
                     # Ollama signals completion with {"done": true}
                     if chunk.get("done"):
+                        prompt_tokens = chunk.get("prompt_eval_count", 0) or 0
+                        completion_tokens = chunk.get("eval_count", 0) or 0
                         break
 
         # Store assistant reply in history
         history.append({"role": "assistant", "content": full_response})
+
+        LLMObs.annotate(
+            span=span,
+            output_data=[{"role": "assistant", "content": full_response}],
+            metrics={
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            },
+        )
 
         # Send completed event
         await websocket.send_json(
@@ -170,6 +196,8 @@ async def stream_ollama(
         )
 
     except httpx.HTTPStatusError as exc:
+        if span:
+            LLMObs.annotate(span=span, metadata={"error": str(exc), "error_type": type(exc).__name__})
         await websocket.send_json(
             {
                 "task_id": task_id,
@@ -178,7 +206,9 @@ async def stream_ollama(
                 "conversation_id": conversation_id,
             }
         )
-    except httpx.ConnectError:
+    except httpx.ConnectError as exc:
+        if span:
+            LLMObs.annotate(span=span, metadata={"error": str(exc), "error_type": "ConnectError"})
         await websocket.send_json(
             {
                 "task_id": task_id,
@@ -188,6 +218,8 @@ async def stream_ollama(
             }
         )
     except Exception as exc:  # noqa: BLE001
+        if span:
+            LLMObs.annotate(span=span, metadata={"error": str(exc), "error_type": type(exc).__name__})
         await websocket.send_json(
             {
                 "task_id": task_id,
@@ -196,6 +228,9 @@ async def stream_ollama(
                 "conversation_id": conversation_id,
             }
         )
+    finally:
+        if span:
+            span.finish()
 
 
 # ---------------------------------------------------------------------------
@@ -206,10 +241,16 @@ async def stream_ollama(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
+    LLMObs.enable(
+        ml_app="monty-chatbot",
+        integrations_enabled=True,
+        agentless_enabled=False,
+        service="monty-llm",
+    )
     print(f"Monty gateway starting on :{GATEWAY_PORT}")
     print(f"Ollama: {OLLAMA_HOST}  Model: {OLLAMA_MODEL}")
     yield
-    # Cleanup conversation memory
+    LLMObs.disable()
     conversations.clear()
     print("Monty gateway stopped")
 

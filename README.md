@@ -311,6 +311,75 @@ This allows a single Rayne instance to manage webhooks from multiple Datadog org
 | GET | `/v1/rum/analytics` | Get visitor analytics |
 | GET | `/v1/rum/sessions` | List recent sessions |
 
+## Frontend RUM Integration
+
+The frontend includes Datadog Real User Monitoring (RUM) integration that links browser sessions to backend-generated UUIDs stored in PostgreSQL.
+
+### How It Works
+
+1. **SDK Load**: The Datadog Browser RUM SDK is loaded from CDN on page load
+2. **Backend Init**: `POST /v1/rum/init` is called to get/create a visitor UUID
+3. **User Identity**: `DD_RUM.setUser({ id: visitor_uuid })` links Datadog sessions to our UUID
+4. **Event Tracking**: Page views and custom events are tracked to both Datadog and the backend
+5. **Session End**: `beforeunload` and `visibilitychange` events trigger session end tracking
+
+### Architecture Flow
+
+```
+Browser                          Backend (8080)         Datadog
+   │                                  │                    │
+   │ 1. Load DD_RUM SDK               │                    │
+   │ 2. POST /v1/rum/init ──────────► │                    │
+   │ ◄─────── visitor_uuid, session_id│                    │
+   │ 3. DD_RUM.setUser({id: uuid})    │                    │
+   │ 4. DD_RUM sends events ──────────┼──────────────────► │
+   │    (with @usr.id = our uuid)     │                    │
+   │ 5. POST /v1/rum/track ──────────►│                    │
+   │                                  │ PostgreSQL         │
+```
+
+### Configuration
+
+The frontend RUM script uses `window.RAYNE_API_BASE` to determine the backend URL:
+
+```html
+<script>
+    window.RAYNE_API_BASE = 'http://localhost:8080';  <!-- Set to your backend URL -->
+</script>
+<script src="/static/js/datadog-rum-init.js"></script>
+```
+
+### localStorage Keys
+
+| Key | Description |
+|-----|-------------|
+| `rayne_visitor_uuid` | Persistent visitor UUID from backend |
+| `rayne_session_id` | Current session ID |
+| `rayne_session_start` | Session start timestamp (ms) |
+
+### Viewing in Datadog Console
+
+1. Navigate to **RUM** → **Explorer**
+2. Filter by `service:rayne-frontend`
+3. Group by `@usr.id` to see unique visitors by backend UUID
+4. Click a session to see full user journey with our UUID as the user identifier
+
+### Custom Event Tracking
+
+Use the global `window.rayneRUM` object for custom event tracking:
+
+```javascript
+// Track a custom event (sends to both Datadog and backend)
+window.rayneRUM.trackEvent('button_click', {
+    button_id: 'submit-form',
+    form_name: 'contact'
+});
+
+// Access current visitor info
+console.log(window.rayneRUM.visitorUuid);
+console.log(window.rayneRUM.sessionId);
+```
+
 ### Demo Data
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -529,6 +598,269 @@ The traffic generator randomly injects 4xx and 5xx errors to simulate real-world
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `FAILURE_RATE` | 10 | Percentage chance of failure per traffic cycle (0-100) |
+
+## Frontend Traffic Generator
+
+Generate realistic frontend traffic with proper RUM (Real User Monitoring) integration. 25% of simulated visitors are "new users" who receive fresh UUIDs from the backend, while 75% are "returning users" who reuse previously assigned UUIDs.
+
+### Usage
+
+```bash
+# Show help
+./scripts/frontend-traffic-generator.sh --help
+
+# Start with defaults (25% new users)
+./scripts/frontend-traffic-generator.sh start
+
+# Start with 40% new users
+./scripts/frontend-traffic-generator.sh -n 40 start
+
+# Start with custom URLs
+./scripts/frontend-traffic-generator.sh -f http://frontend:3000 -b http://api:8080 start
+
+# Use environment variables
+NEW_USER_RATE=30 ./scripts/frontend-traffic-generator.sh start
+
+# Check status
+./scripts/frontend-traffic-generator.sh status
+
+# Stop
+./scripts/frontend-traffic-generator.sh stop
+
+# View logs
+tail -f /tmp/rayne-frontend-traffic.log
+```
+
+### Command-Line Options
+
+| Option | Description |
+|--------|-------------|
+| `-n, --new-rate PERCENT` | Percentage of new users (default: 25) |
+| `-f, --frontend URL` | Frontend server URL (default: http://localhost:3000) |
+| `-b, --backend URL` | Backend API URL (default: http://localhost:8080) |
+| `-v, --verbose` | Enable verbose logging |
+| `-h, --help` | Show help with examples and integration guide |
+
+### How It Works
+
+1. **New Users (default 25%)**: No existing UUID is sent → backend generates new UUID via `/v1/rum/init`
+2. **Returning Users (default 75%)**: Existing UUID from pool is reused → backend returns same UUID
+3. **Session Tracking**: Each visit creates a new session, even for returning users
+4. **Event Simulation**: Page views, navigation, clicks, and session ends are tracked
+5. **APM Trace Injection**: Captures `trace_id` and `span_id` from init response and propagates to all track calls
+
+### APM Trace Correlation
+
+The traffic generator automatically captures APM trace context from `/v1/rum/init` responses and propagates it to all subsequent `/v1/rum/track` calls. This allows you to correlate RUM sessions with backend APM traces in Datadog.
+
+**Response from /v1/rum/init:**
+```json
+{
+    "visitor_uuid": "a1b2c3d4-...",
+    "session_id": "f9e8d7c6-...",
+    "is_new": true,
+    "trace_id": "1234567890123456",
+    "span_id": "9876543210987654"
+}
+```
+
+**In Datadog APM:**
+- Filter by `@usr.id` to see traces for a specific visitor UUID
+- Use `trace_id` to jump from a RUM event directly to the backend APM trace
+- View the full request flow from frontend to backend
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FRONTEND_URL` | http://localhost:3000 | Frontend server URL |
+| `BACKEND_URL` | http://localhost:8080 | Backend API URL |
+| `NEW_USER_RATE` | 25 | Percentage of visits that are "new users" (0-100) |
+
+### Visitor Pool
+
+Known visitor UUIDs are stored in `/tmp/rayne-visitor-pool.txt` and persist across runs. This simulates realistic returning user behavior. The pool is capped at 100 UUIDs (oldest are removed when exceeded).
+
+### Verifying Traffic
+
+```bash
+# Check visitor analytics
+curl localhost:8080/v1/rum/analytics
+
+# Check recent sessions (should show mix of new/returning)
+curl localhost:8080/v1/rum/sessions
+
+# View unique visitors
+curl localhost:8080/v1/rum/visitors?period=1h
+```
+
+## Integrating RUM with External Sites
+
+Any website can use Rayne's RUM service for server-generated visitor UUIDs and unique visitor tracking. This provides a centralized, backend-verified system for identifying new vs returning visitors.
+
+### Quick Integration
+
+Add this script to your website's `<body>` (before closing `</body>` tag):
+
+```html
+<script>
+    window.RAYNE_API_BASE = 'https://your-rayne-server.com';  // Your Rayne backend URL
+</script>
+<script src="https://your-rayne-server.com/static/js/datadog-rum-init.js"></script>
+```
+
+Or host the script locally and configure the API base:
+
+```html
+<script>
+    window.RAYNE_API_BASE = 'https://api.example.com';
+</script>
+<script src="/js/rayne-rum.js"></script>
+```
+
+### Manual Integration
+
+For full control, implement the RUM flow manually:
+
+#### 1. Initialize Visitor (on page load)
+
+```javascript
+async function initVisitor() {
+    const storedUuid = localStorage.getItem('rayne_visitor_uuid');
+    const storedSession = localStorage.getItem('rayne_session_id');
+
+    const response = await fetch('https://rayne-api.example.com/v1/rum/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            visitor_uuid: storedUuid || undefined,  // Omit for new visitors
+            session_id: storedSession || undefined,
+            user_agent: navigator.userAgent,
+            referrer: document.referrer,
+            page_url: window.location.href
+        })
+    });
+
+    const data = await response.json();
+
+    // Store for future visits
+    localStorage.setItem('rayne_visitor_uuid', data.visitor_uuid);
+    localStorage.setItem('rayne_session_id', data.session_id);
+
+    console.log(data.is_new ? 'New visitor!' : 'Returning visitor');
+    return data;
+}
+```
+
+#### 2. Track Events
+
+```javascript
+async function trackEvent(eventType, metadata = {}) {
+    const visitorUuid = localStorage.getItem('rayne_visitor_uuid');
+    const sessionId = localStorage.getItem('rayne_session_id');
+
+    await fetch('https://rayne-api.example.com/v1/rum/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            visitor_uuid: visitorUuid,
+            session_id: sessionId,
+            event_type: eventType,  // 'view', 'action', 'error', 'resource', 'long_task'
+            page_url: window.location.href,
+            page_title: document.title,
+            metadata: metadata,
+            timestamp: new Date().toISOString()
+        })
+    });
+}
+
+// Track page view
+trackEvent('view');
+
+// Track custom actions
+trackEvent('action', { action_name: 'button_click', button_id: 'signup' });
+```
+
+#### 3. End Session (on page unload)
+
+```javascript
+window.addEventListener('beforeunload', () => {
+    const sessionId = localStorage.getItem('rayne_session_id');
+    const sessionStart = localStorage.getItem('rayne_session_start');
+    const duration = sessionStart ? Date.now() - parseInt(sessionStart) : 0;
+
+    navigator.sendBeacon('https://rayne-api.example.com/v1/rum/session/end', JSON.stringify({
+        session_id: sessionId,
+        duration_ms: duration,
+        exit_page: window.location.href
+    }));
+});
+```
+
+### API Reference
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/v1/rum/init` | POST | Get/create visitor UUID. Returns `is_new: true` for first-time visitors |
+| `/v1/rum/track` | POST | Track events (views, actions, errors) |
+| `/v1/rum/session/end` | POST | End a session with duration and exit page |
+| `/v1/rum/visitor/{uuid}` | GET | Get visitor details and session history |
+| `/v1/rum/analytics` | GET | Get analytics (unique visitors, sessions, event counts) |
+
+### Response Format
+
+**POST /v1/rum/init Response:**
+
+```json
+{
+    "visitor_uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "session_id": "f9e8d7c6-b5a4-3210-fedc-ba0987654321",
+    "is_new": true,
+    "message": "Welcome, new visitor!",
+    "trace_id": "1234567890123456789",
+    "span_id": "9876543210987654321"
+}
+```
+
+- `is_new: true` - First-time visitor (new UUID generated)
+- `is_new: false` - Returning visitor (UUID recognized from database)
+- `trace_id` - APM trace ID for correlating RUM sessions with backend traces
+- `span_id` - APM span ID for the init request
+
+### APM Trace Correlation
+
+The RUM endpoints return APM trace context (`trace_id`, `span_id`) that allows you to correlate frontend RUM sessions with backend APM traces. Pass these values in subsequent `/v1/rum/track` calls:
+
+```javascript
+// After init, store trace context
+const { trace_id, span_id } = initResponse;
+
+// Include in track calls for correlation
+await fetch('/v1/rum/track', {
+    method: 'POST',
+    body: JSON.stringify({
+        visitor_uuid: visitorUuid,
+        session_id: sessionId,
+        event_type: 'view',
+        trace_id: trace_id,   // Links RUM event to backend trace
+        span_id: span_id
+    })
+});
+```
+
+In Datadog, you can then navigate from RUM sessions to APM traces using the trace ID.
+
+### CORS Configuration
+
+If your site is on a different domain than Rayne, ensure Rayne has CORS enabled for your origin. Add your domain to the allowed origins in Rayne's configuration.
+
+### localStorage Keys
+
+| Key | Description |
+|-----|-------------|
+| `rayne_visitor_uuid` | Persistent visitor UUID (survives browser restart) |
+| `rayne_session_id` | Current session ID (new per visit) |
+| `rayne_session_start` | Session start timestamp for duration calculation |
 
 ## Desktop Notifications
 

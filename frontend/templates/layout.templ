@@ -16,6 +16,10 @@ templ Layout(title string) {
 		<body>
 			{ children... }
 			<script src="/static/js/chat.js"></script>
+			<script>
+				window.RAYNE_API_BASE = 'http://' + window.location.hostname + ':8080';
+			</script>
+			<script src="/static/js/datadog-rum-init.js"></script>
 		</body>
 	</html>
 }
