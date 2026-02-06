@@ -369,14 +369,15 @@ html[data-darkreader-scheme] .gradient-text::before {
 
 .chat-label {
   display: block;
-  text-align: center;
-  font-size: 0.7rem;
+  font-size: 0.9rem;
   font-weight: 700;
   color: var(--accent-primary);
   text-shadow: 0 0 8px var(--accent-glow);
   margin-top: 0.35rem;
   pointer-events: none;
   white-space: nowrap;
+  width: max-content;
+  transform: translateX(calc(-50% + 24px));
 }
 
 .chat-widget.active .chat-label {
@@ -692,7 +693,8 @@ html[data-darkreader-scheme] .gradient-text::before {
   }
 
   .chat-label {
-    font-size: 0.6rem;
+    font-size: 0.8rem;
+    transform: translateX(calc(-50% + 22px));
   }
 
   .chat-container {
@@ -815,7 +817,8 @@ html[data-darkreader-scheme] .gradient-text::before {
   }
 
   .chat-label {
-    font-size: 0.75rem;
+    font-size: 0.95rem;
+    transform: translateX(calc(-50% + 26px));
   }
 
   .chat-avatar {
