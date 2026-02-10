@@ -1,7 +1,7 @@
 # Cloudflare Named Tunnel - Routes public domains through the tunnel
 # Exposes:
-#   - https://n0kos.com         -> frontend on monty (192.168.50.68:3000)
-#   - https://www.n0kos.com     -> frontend on monty (192.168.50.68:3000)
+#   - https://n0kos.com         -> frontend on base via minikube host gateway (192.168.49.1:3000)
+#   - https://www.n0kos.com     -> frontend on base via minikube host gateway (192.168.49.1:3000)
 #   - https://webhooks.n0kos.com -> rayne-service in minikube (:8080)
 #   - https://gateway.n0kos.com -> gateway on base (192.168.50.179:8001)
 #
@@ -29,17 +29,17 @@ data:
     credentials-file: /etc/cloudflared/credentials.json
     no-autoupdate: true
     ingress:
-      # Frontend runs on monty (192.168.50.68), a separate LAN host from
-      # minikube (base). We keep the LAN IP because host.minikube.internal
-      # would only reach the minikube host machine, not monty.
-      # originRequest.connectTimeout gives a fast failure if monty is
+      # Frontend runs on base (host process, port 3000). From inside minikube,
+      # it is reachable via the minikube host gateway IP (192.168.49.1).
+      
+      # originRequest.connectTimeout gives a fast failure if the frontend is
       # unreachable instead of hanging on the default 30s timeout.
       - hostname: n0kos.com
-        service: http://192.168.50.68:3000
+        service: http://192.168.49.1:3000
         originRequest:
           connectTimeout: 10s
       - hostname: www.n0kos.com
-        service: http://192.168.50.68:3000
+        service: http://192.168.49.1:3000
         originRequest:
           connectTimeout: 10s
       - hostname: webhooks.n0kos.com
