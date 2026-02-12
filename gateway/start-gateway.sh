@@ -41,6 +41,11 @@ fi
 info "Installing dependencies..."
 "$VENV_DIR/bin/pip" install -q -r "$SCRIPT_DIR/requirements.txt"
 
+# Source Datadog LLM Observability environment if available
+if [ -f "$HOME/.datadog-llm-env" ]; then
+    . "$HOME/.datadog-llm-env"
+fi
+
 # Export env vars
 export GATEWAY_PORT OLLAMA_HOST OLLAMA_MODEL
 

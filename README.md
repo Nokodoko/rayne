@@ -380,6 +380,92 @@ console.log(window.rayneRUM.visitorUuid);
 console.log(window.rayneRUM.sessionId);
 ```
 
+## LLM Observability
+
+The Monty chatbot gateway is instrumented with Datadog LLM Observability to track all LLM calls (model, prompt, response, token counts, latency).
+
+### Architecture
+
+```
+Browser (chat.js)
+   │ wss://gateway.n0kos.com/chat/ws
+   ▼
+Cloudflare Tunnel → Base Machine (192.168.50.179:8001)
+   │                    │
+   ▼                    ▼
+Monty Gateway       Datadog Agent (localhost:8126)
+   │ (ddtrace LLMObs)     │ EVP Proxy
+   ▼                       ▼
+Ollama (localhost:11434)  llmobs-intake.datadoghq.com
+```
+
+### How It Works
+
+1. `gateway/main.py` uses `ddtrace` to patch FastAPI and httpx at import time
+2. On startup, `LLMObs.enable()` initializes the LLM Observability SDK
+3. Each `stream_ollama()` call creates an LLM span with model name, prompt, and conversation ID
+4. When Ollama returns `done: true`, token metrics (`prompt_eval_count`, `eval_count`) are captured
+5. Spans are sent via the DD agent's EVP proxy to `llmobs-intake.datadoghq.com`
+
+### Setup
+
+**1. Install ddtrace in the gateway venv:**
+```bash
+cd gateway
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+**2. Create the environment file (`~/.datadog-llm-env`):**
+```bash
+export DD_LLMOBS_ENABLED=1
+export DD_LLMOBS_ML_APP=monty-chatbot
+export DD_LLMOBS_AGENTLESS_ENABLED=0
+export DD_SERVICE=monty-llm
+export DD_ENV=production
+export DD_AGENT_HOST=192.168.50.179
+export DD_TRACE_AGENT_PORT=8126
+```
+
+**3. Start the gateway with tracing:**
+```bash
+source ~/.datadog-llm-env
+cd gateway
+.venv/bin/python main.py
+```
+
+Or use the startup script (auto-sources env):
+```bash
+./gateway/start-gateway.sh
+```
+
+### Viewing in Datadog
+
+- **LLM Observability** → filter by `ml_app:monty-chatbot`
+- **APM** → **Services** → `monty-llm`
+- Each trace shows: model name, input prompt, output response, token counts, latency
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| No traces in LLM Obs | Gateway started without DD env vars | Source `~/.datadog-llm-env` before starting |
+| Traces sent but not in UI | DD agent unreachable | Verify `curl http://DD_AGENT_HOST:8126/info` returns 200 |
+| `cf-cache-status: HIT` on chat.js | Stale JS cached by Cloudflare | Purge via API: `curl -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/purge_cache"` |
+| Gateway healthy but no LLM spans | Wrong gateway process (no ddtrace) | Check `cat /proc/$(pgrep -f python.*main)/environ \| tr '\0' '\n' \| grep DD_LLMOBS` |
+
+### Environment Variables
+
+| Variable | Value | Purpose |
+|----------|-------|---------|
+| `DD_LLMOBS_ENABLED` | `1` | Enable LLM Observability SDK |
+| `DD_LLMOBS_ML_APP` | `monty-chatbot` | ML app name in Datadog |
+| `DD_LLMOBS_AGENTLESS_ENABLED` | `0` | Route through DD agent (not direct) |
+| `DD_SERVICE` | `monty-llm` | APM service name |
+| `DD_ENV` | `production` | Environment tag |
+| `DD_AGENT_HOST` | `192.168.50.179` | Datadog agent address |
+| `DD_TRACE_AGENT_PORT` | `8126` | Datadog agent APM port |
+
 ### Demo Data
 | Method | Endpoint | Description |
 |--------|----------|-------------|

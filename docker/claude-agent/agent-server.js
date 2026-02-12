@@ -686,6 +686,215 @@ function loadTemplate(templateName) {
     }
 }
 
+// Process a GitHub issue using Claude Code CLI
+async function processGitHubIssue(issueData) {
+    const { issue_number, issue_title, issue_body, repo_name, sender_login, past_issues } = issueData;
+
+    // Sanitize inputs - strip control characters, limit lengths
+    const safeTitle = (issue_title || '').replace(/[\x00-\x1f\x7f]/g, '').substring(0, 200);
+    const safeBody = (issue_body || '').replace(/[\x00-\x1f\x7f]/g, ' ').substring(0, 10000);
+    const safeRepo = (repo_name || '').replace(/[^a-zA-Z0-9_./-]/g, '');
+
+    console.log(`[GitHub] Processing issue #${issue_number}: ${safeTitle}`);
+
+    // Build past issues context
+    let pastIssuesContext = '';
+    if (past_issues && past_issues.length > 0) {
+        pastIssuesContext = `\n## Previously Processed Issues\n\nThe following issues have already been processed by the agent. Cross-reference these to detect duplicates:\n\n`;
+        past_issues.forEach(pi => {
+            pastIssuesContext += `- **Issue #${pi.number}**: ${pi.title}`;
+            if (pi.branch_name) pastIssuesContext += ` (branch: \`${pi.branch_name}\`)`;
+            if (pi.summary) pastIssuesContext += `\n  Summary: ${pi.summary}`;
+            pastIssuesContext += ` [status: ${pi.agent_status}]\n`;
+        });
+        pastIssuesContext += `\n`;
+    }
+
+    const prompt = `You are implementing a feature request from GitHub issue #${issue_number} in the ${safeRepo} repository.
+
+## Issue: ${safeTitle}
+
+${safeBody}
+${pastIssuesContext}
+## CRITICAL: Duplicate Detection
+
+Before implementing anything, carefully compare this issue against the Previously Processed Issues list above.
+
+If this issue requests a feature that has ALREADY been implemented (same functionality, even if worded differently), you MUST:
+1. Do NOT implement anything
+2. Do NOT create a branch
+3. Output a JSON summary with "duplicate": true indicating which issue already covers this
+
+## Instructions (only if NOT a duplicate)
+
+1. Read the CLAUDE.md and any agentic_instructions.md files in relevant directories to understand project patterns
+2. Explore the existing codebase to understand architecture and conventions
+3. Plan the implementation by identifying which files need to be created or modified
+4. Implement the feature following existing patterns:
+   - Go handlers return (int, any) for status code and response body
+   - PostgreSQL uses $1, $2 placeholders
+   - Route registration uses utils.Endpoint() or utils.EndpointWithPathParams()
+   - Services follow the handler.go / storage.go / types.go pattern
+5. Create a new git branch named "feature/issue-${issue_number}" from the current branch
+6. Commit your changes with a descriptive message referencing issue #${issue_number}
+7. Output a JSON summary in this exact format:
+
+\`\`\`json
+{
+  "branch_name": "feature/issue-${issue_number}",
+  "modified_files": ["list", "of", "modified", "files"],
+  "new_types": ["list of new types/structs created"],
+  "summary": "Brief description of what was implemented"
+}
+\`\`\`
+
+## If this IS a duplicate, output ONLY this:
+
+\`\`\`json
+{
+  "duplicate": true,
+  "duplicate_of": <issue_number_that_already_covers_this>,
+  "summary": "This feature was already implemented in issue #X which added <brief description>"
+}
+\`\`\`
+
+IMPORTANT: Your final output MUST contain the JSON block above so results can be parsed.`;
+
+    const result = await invokeClaudeCode(prompt, WORK_DIR);
+
+    // Parse JSON summary from Claude's output
+    const jsonMatch = result.match(/```json\n([\s\S]*?)\n```/);
+    let summary = {};
+    if (jsonMatch) {
+        try {
+            summary = JSON.parse(jsonMatch[1]);
+        } catch (e) {
+            console.error(`[GitHub] Failed to parse JSON summary: ${e.message}`);
+            summary = { summary: result.substring(0, 1000), raw: true };
+        }
+    } else {
+        summary = { summary: result.substring(0, 1000), raw: true };
+    }
+
+    return summary;
+}
+
+// Build a markdown comment for the GitHub issue
+function buildIssueComment(summary) {
+    if (summary.raw) {
+        return `## Agent Implementation Report\n\nThe agent processed this feature request.\n\n\`\`\`\n${summary.summary}\n\`\`\`\n\n---\n*Automated by Rayne Claude Agent*`;
+    }
+
+    let comment = `## Agent Implementation Report\n\n`;
+    comment += `**Branch:** \`${summary.branch_name || 'unknown'}\`\n\n`;
+
+    if (summary.modified_files && summary.modified_files.length > 0) {
+        comment += `### Modified Files\n`;
+        summary.modified_files.forEach(f => { comment += `- \`${f}\`\n`; });
+        comment += `\n`;
+    }
+
+    if (summary.new_types && summary.new_types.length > 0) {
+        comment += `### New Data Types\n`;
+        summary.new_types.forEach(t => { comment += `- \`${t}\`\n`; });
+        comment += `\n`;
+    }
+
+    if (summary.summary) {
+        comment += `### Summary\n${summary.summary}\n\n`;
+    }
+
+    comment += `---\n*Automated by Rayne Claude Agent*`;
+    return comment;
+}
+
+// Comment on a GitHub issue using gh CLI
+async function commentOnGitHubIssue(repoName, issueNumber, body) {
+    // Validate repo name format
+    if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repoName)) {
+        throw new Error(`Invalid repo name format: ${repoName}`);
+    }
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+        throw new Error(`Invalid issue number: ${issueNumber}`);
+    }
+
+    return new Promise((resolve, reject) => {
+        const { spawn } = require('child_process');
+        const gh = spawn('gh', ['issue', 'comment', String(issueNumber),
+            '--repo', repoName, '--body', body], {
+            env: { ...process.env },
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+
+        const timeout = setTimeout(() => {
+            gh.kill('SIGTERM');
+            reject(new Error('gh comment timed out after 30s'));
+        }, 30000);
+
+        let stdout = '', stderr = '';
+        gh.stdout.on('data', d => stdout += d);
+        gh.stderr.on('data', d => stderr += d);
+        gh.on('close', code => {
+            clearTimeout(timeout);
+            if (code === 0) {
+                console.log(`[GitHub] Commented on ${repoName}#${issueNumber}`);
+                resolve(stdout.trim());
+            } else {
+                console.error(`[GitHub] gh comment failed (code ${code}): ${stderr}`);
+                reject(new Error(`gh exited ${code}: ${stderr}`));
+            }
+        });
+        gh.on('error', err => {
+            reject(new Error(`Failed to spawn gh: ${err.message}`));
+        });
+    });
+}
+
+// Close a GitHub issue with a comment using gh CLI
+async function closeGitHubIssue(repoName, issueNumber, reason) {
+    // Validate inputs
+    if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repoName)) {
+        throw new Error(`Invalid repo name format: ${repoName}`);
+    }
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+        throw new Error(`Invalid issue number: ${issueNumber}`);
+    }
+
+    // Comment first, then close
+    await commentOnGitHubIssue(repoName, issueNumber, reason);
+
+    return new Promise((resolve, reject) => {
+        const { spawn } = require('child_process');
+        const gh = spawn('gh', ['issue', 'close', String(issueNumber),
+            '--repo', repoName, '--reason', 'not planned'], {
+            env: { ...process.env },
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+
+        const timeout = setTimeout(() => {
+            gh.kill('SIGTERM');
+            reject(new Error('gh close timed out after 30s'));
+        }, 30000);
+
+        let stdout = '', stderr = '';
+        gh.stdout.on('data', d => stdout += d);
+        gh.stderr.on('data', d => stderr += d);
+        gh.on('close', code => {
+            clearTimeout(timeout);
+            if (code === 0) {
+                console.log(`[GitHub] Closed ${repoName}#${issueNumber}`);
+                resolve(stdout.trim());
+            } else {
+                console.error(`[GitHub] gh close failed (code ${code}): ${stderr}`);
+                reject(new Error(`gh exited ${code}: ${stderr}`));
+            }
+        });
+        gh.on('error', err => {
+            reject(new Error(`Failed to spawn gh: ${err.message}`));
+        });
+    });
+}
+
 // HTTP Server
 const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -1158,6 +1367,87 @@ Return the notebook JSON that can be POSTed to the Datadog Notebooks API.`;
             ddLibPath: DD_LIB_DIR,
             writable: true
         });
+        return;
+    }
+
+    // GitHub Issue Processing endpoint
+    if (url.pathname === '/github/process-issue' && req.method === 'POST') {
+        try {
+            // Verify internal shared secret
+            const expectedSecret = process.env.AGENT_INTERNAL_SECRET;
+            if (expectedSecret) {
+                const provided = req.headers['x-agent-secret'];
+                if (provided !== expectedSecret) {
+                    sendJson(res, 401, { error: 'unauthorized' });
+                    return;
+                }
+            }
+
+            const body = await parseBody(req);
+            const { issue_number, issue_title, issue_body, repo_name, sender_login, event_id } = body;
+
+            if (!issue_number || !issue_title || !repo_name) {
+                sendJson(res, 400, { error: 'issue_number, issue_title, and repo_name are required' });
+                return;
+            }
+
+            console.log(`[GitHub] Processing issue #${issue_number}: ${issue_title}`);
+
+            // Invoke Claude Code to implement the feature
+            const summary = await processGitHubIssue(body);
+
+            // Check if this was detected as a duplicate
+            if (summary.duplicate) {
+                console.log(`[GitHub] Issue #${issue_number} detected as duplicate of #${summary.duplicate_of}`);
+
+                // Build duplicate comment
+                const dupComment = `## Duplicate Issue Detected\n\n` +
+                    `This feature request appears to have already been implemented in **issue #${summary.duplicate_of}**.\n\n` +
+                    `${summary.summary || ''}\n\n` +
+                    `Closing as duplicate. If this is incorrect, please reopen with additional context explaining what differs.\n\n` +
+                    `---\n*Automated by Rayne Claude Agent*`;
+
+                try {
+                    await closeGitHubIssue(repo_name, issue_number, dupComment);
+                    summary.comment_url = 'closed-as-duplicate';
+                } catch (ghErr) {
+                    console.error(`[GitHub] Failed to close duplicate issue: ${ghErr.message}`);
+                    summary.comment_error = ghErr.message;
+                }
+
+                sendJson(res, 200, {
+                    success: true,
+                    duplicate: true,
+                    duplicate_of: summary.duplicate_of,
+                    summary: summary.summary || '',
+                    comment_url: summary.comment_url || '',
+                    timestamp: new Date().toISOString()
+                });
+                return;
+            }
+
+            // Not a duplicate - comment on the GitHub issue with results
+            try {
+                const commentBody = buildIssueComment(summary);
+                const commentUrl = await commentOnGitHubIssue(repo_name, issue_number, commentBody);
+                summary.comment_url = commentUrl;
+            } catch (ghErr) {
+                console.error(`[GitHub] Failed to comment on issue: ${ghErr.message}`);
+                summary.comment_error = ghErr.message;
+            }
+
+            sendJson(res, 200, {
+                success: true,
+                branch_name: summary.branch_name || '',
+                modified_files: summary.modified_files || [],
+                summary: summary.summary || '',
+                comment_url: summary.comment_url || '',
+                timestamp: new Date().toISOString()
+            });
+        } catch (err) {
+            console.error(`[GitHub] Processing error: ${err.message}`);
+            sendJson(res, 500, { success: false, error: 'internal processing error' });
+        }
         return;
     }
 

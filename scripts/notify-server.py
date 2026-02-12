@@ -5,6 +5,7 @@ and sends desktop notifications via notify-send.
 """
 
 import argparse
+import re
 import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import json
@@ -76,10 +77,15 @@ class NotifyHandler(BaseHTTPRequestHandler):
         title = data.get('title', 'Datadog Webhook')
         message = data.get('message', '')
         urgency = data.get('urgency', 'critical')
+        frcolor = data.get('frcolor', '#ff8c00')  # Default orange, callers can override
 
         # Validate urgency
         if urgency not in ('critical', 'normal', 'low'):
             urgency = 'critical'
+
+        # Validate frcolor is a hex color
+        if not re.match(r'^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$', frcolor):
+            frcolor = '#ff8c00'
 
         notification_body = message if message else title
 
@@ -88,8 +94,7 @@ class NotifyHandler(BaseHTTPRequestHandler):
         print(f"[WEBHOOK] Received:")
         print(json.dumps(data, indent=2))
 
-        # Send desktop notification with dunst hints for orange border
-        # Requires dunst config rule for appname=Rayne with frame_color=#ff8c00
+        # Send desktop notification with dunst hints
         try:
             subprocess.run([
                 'notify-send',
@@ -98,11 +103,11 @@ class NotifyHandler(BaseHTTPRequestHandler):
                 '-h', 'string:x-dunst-stack-tag:rayne',
                 '-h', 'string:fgcolor:#ffffff',
                 '-h', 'string:bgcolor:#1a1a1a',
-                '-h', 'string:frcolor:#ff8c00',
+                '-h', f'string:frcolor:{frcolor}',
                 title,
                 notification_body
             ], check=True)
-            print(f"[NOTIFY] Sent: {title} (orange border)")
+            print(f"[NOTIFY] Sent: {title} (border: {frcolor})")
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')

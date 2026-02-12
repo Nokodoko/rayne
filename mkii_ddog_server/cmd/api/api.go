@@ -15,6 +15,7 @@ import (
 	"github.com/Nokodoko/mkii_ddog_server/services/demo"
 	"github.com/Nokodoko/mkii_ddog_server/services/downtimes"
 	"github.com/Nokodoko/mkii_ddog_server/services/events"
+	githubsvc "github.com/Nokodoko/mkii_ddog_server/services/github"
 	"github.com/Nokodoko/mkii_ddog_server/services/hosts"
 	"github.com/Nokodoko/mkii_ddog_server/services/logs"
 	"github.com/Nokodoko/mkii_ddog_server/services/monitors"
@@ -173,9 +174,13 @@ func (d *DDogServer) Run(ctx context.Context) error {
 	d.dispatcher = webhooks.NewDispatcher(procOrch, dispatcherConfig)
 	d.dispatcher.Start()
 
+	// Initialize GitHub issue webhook storage + handler
+	githubStorage := githubsvc.NewStorage(d.db)
+
 	// Initialize handlers
 	userHandler := user.NewHandler(userStorage)
 	webhookHandler := webhooks.NewHandlerWithAccounts(webhookStorage, d.dispatcher, accountManager)
+	githubHandler := githubsvc.NewHandler(githubStorage)
 	rumHandler := rum.NewHandler(rumStorage)
 	demoHandler := demo.NewHandler(webhookStorage, rumStorage)
 	accountHandler := accounts.NewHandler(accountManager)
@@ -186,6 +191,9 @@ func (d *DDogServer) Run(ctx context.Context) error {
 	}
 	if err := rumStorage.InitTables(); err != nil {
 		log.Printf("Warning: Failed to initialize RUM tables: %v", err)
+	}
+	if err := githubStorage.InitTables(); err != nil {
+		log.Printf("Warning: Failed to initialize GitHub tables: %v", err)
 	}
 
 	// Register routes
@@ -228,6 +236,12 @@ func (d *DDogServer) Run(ctx context.Context) error {
 	utils.Endpoint(router, "GET", "/v1/webhooks/processors", webhookHandler.ListProcessors)
 	utils.Endpoint(router, "GET", "/v1/webhooks/dispatcher/stats", webhookHandler.GetDispatcherStats)
 	utils.Endpoint(router, "GET", "/v1/webhooks/test-notify", webhookHandler.TestNotify)
+
+	// GitHub webhooks
+	utils.Endpoint(router, "POST", "/v1/webhooks/github/issues", githubHandler.ReceiveIssueEvent)
+	utils.Endpoint(router, "GET", "/v1/webhooks/github/issues", githubHandler.GetIssueEvents)
+	utils.Endpoint(router, "GET", "/v1/webhooks/github/issues/stats", githubHandler.GetIssueStats)
+	utils.EndpointWithPathParams(router, "GET", "/v1/webhooks/github/issues/{id}", "id", githubHandler.GetIssueEvent)
 
 	// Accounts (multi-account Datadog management)
 	utils.Endpoint(router, "GET", "/v1/accounts", accountHandler.ListAccounts)
@@ -294,6 +308,9 @@ func (d *DDogServer) Run(ctx context.Context) error {
 		  POST /v1/webhooks/receive, /v1/webhooks/receive/{account}
 		  GET  /v1/webhooks/events, /v1/webhooks/stats
 		  GET  /v1/webhooks/dispatcher/stats
+		  POST /v1/webhooks/github/issues (GitHub Issue webhook)
+		  GET  /v1/webhooks/github/issues, /v1/webhooks/github/issues/{id}
+		  GET  /v1/webhooks/github/issues/stats
 		  GET  /v1/agents/stats
 		  POST /v1/rum/init, /v1/rum/track
 		  GET  /v1/rum/analytics, /v1/rum/visitors

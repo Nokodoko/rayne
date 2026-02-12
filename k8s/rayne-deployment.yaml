@@ -35,14 +35,17 @@ spec:
     spec:
       # Init containers to copy credentials and dd_lib to writable volumes
       initContainers:
-        - name: init-claude-credentials
-          image: busybox:1.36
+        - name: init-claude-home
+          image: claude-agent:latest
+          imagePullPolicy: Never
           command:
-            [
-              "sh",
-              "-c",
-              "cp /credentials/.credentials.json /claude-home/.credentials.json && chown -R 1000:1000 /claude-home",
-            ]
+            - "sh"
+            - "-c"
+            - |
+              cp -r /opt/claude-config/* /claude-home/ 2>/dev/null || true
+              cp /credentials/.credentials.json /claude-home/.credentials.json
+              chown -R 1000:1000 /claude-home
+              echo "Init complete:" && ls -la /claude-home/
           volumeMounts:
             - name: claude-credentials-secret
               mountPath: /credentials
@@ -102,7 +105,7 @@ spec:
               value: "http://localhost:9000"
             # Desktop notification servers (comma-separated)
             - name: NOTIFY_SERVER_URLS
-              value: "http://host.minikube.internal:9999,http://192.168.50.68:9999"
+              value: "http://192.168.50.68:9999"
           resources:
             requests:
               memory: "64Mi"
@@ -168,7 +171,7 @@ spec:
               value: "http://ollama-service:11434"
             # Desktop notification servers (comma-separated)
             - name: NOTIFY_SERVER_URLS
-              value: "http://host.minikube.internal:9999,http://192.168.50.68:9999"
+              value: "http://192.168.50.68:9999"
           resources:
             requests:
               memory: "512Mi"
@@ -208,7 +211,9 @@ spec:
             name: rayne-assets
         # Shared workspace for Claude operations
         - name: work-volume
-          emptyDir: {}
+          hostPath:
+            path: /home/n0ko/Portfolio/rayne
+            type: Directory
         # Claude credentials secret (source for init container)
         - name: claude-credentials-secret
           secret:
