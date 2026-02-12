@@ -16,7 +16,8 @@ const (
 	RoleNetwork        AgentRole = "network"
 	RoleDatabase       AgentRole = "database"
 	RoleLogs           AgentRole = "logs"
-	RoleGeneral        AgentRole = "general" // Fallback for unclassified alerts
+	RoleWatchdog       AgentRole = "watchdog" // Datadog Watchdog anomaly detection monitors
+	RoleGeneral        AgentRole = "general"  // Fallback for unclassified alerts
 )
 
 // Agent defines the interface for specialist agents that can analyze alerts

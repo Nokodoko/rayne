@@ -26,6 +26,7 @@ func TestRoleClassifier_ClassifyByMonitorType(t *testing.T) {
 		{"Log monitor", "log", RoleLogs},
 		{"Synthetics monitor", "synthetics", RoleNetwork},
 		{"Network monitor", "network", RoleNetwork},
+		{"Watchdog monitor", "watchdog", RoleWatchdog},
 		{"Unknown type defaults to infrastructure", "unknown", RoleInfrastructure},
 		{"Empty type defaults to infrastructure", "", RoleInfrastructure},
 	}
@@ -264,6 +265,133 @@ func TestNewRoleClassifier(t *testing.T) {
 	}
 	if len(classifier.hostnamePatterns) == 0 {
 		t.Error("hostnamePatterns should not be empty")
+	}
+}
+
+func TestRoleClassifier_Watchdog(t *testing.T) {
+	classifier := NewRoleClassifier()
+
+	tests := []struct {
+		name     string
+		event    *types.AlertEvent
+		expected AgentRole
+	}{
+		{
+			name: "Watchdog by monitor_type",
+			event: &types.AlertEvent{
+				Payload: types.AlertPayload{
+					MonitorType: "watchdog",
+					MonitorName: "CPU anomaly detected",
+				},
+			},
+			expected: RoleWatchdog,
+		},
+		{
+			name: "Watchdog by monitor name",
+			event: &types.AlertEvent{
+				Payload: types.AlertPayload{
+					MonitorType: "metric",
+					MonitorName: "[Watchdog] Latency anomaly on api-server",
+				},
+			},
+			expected: RoleWatchdog,
+		},
+		{
+			name: "Watchdog by alert title",
+			event: &types.AlertEvent{
+				Payload: types.AlertPayload{
+					MonitorType: "metric",
+					MonitorName: "Some monitor",
+					AlertTitle:  "Watchdog detected high CPU usage",
+				},
+			},
+			expected: RoleWatchdog,
+		},
+		{
+			name: "Watchdog by source tag",
+			event: &types.AlertEvent{
+				Payload: types.AlertPayload{
+					MonitorType: "metric",
+					MonitorName: "Some monitor",
+					Tags:        []string{"env:prod", "source:watchdog"},
+				},
+			},
+			expected: RoleWatchdog,
+		},
+		{
+			name: "Watchdog by created_by tag",
+			event: &types.AlertEvent{
+				Payload: types.AlertPayload{
+					MonitorType: "metric",
+					MonitorName: "Some monitor",
+					Tags:        []string{"created_by:watchdog"},
+				},
+			},
+			expected: RoleWatchdog,
+		},
+		{
+			name: "Watchdog takes priority over other classifications",
+			event: &types.AlertEvent{
+				Payload: types.AlertPayload{
+					MonitorType: "apm",
+					MonitorName: "[Watchdog] APM latency anomaly",
+					Service:     "user-api",
+				},
+			},
+			expected: RoleWatchdog,
+		},
+		{
+			name: "Non-watchdog metric monitor not affected",
+			event: &types.AlertEvent{
+				Payload: types.AlertPayload{
+					MonitorType: "metric",
+					MonitorName: "CPU usage high",
+					Tags:        []string{"env:prod"},
+				},
+			},
+			expected: RoleInfrastructure,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			role := classifier.Classify(tt.event)
+			if role != tt.expected {
+				t.Errorf("expected %s, got %s", tt.expected, role)
+			}
+		})
+	}
+}
+
+func TestIsWatchdog(t *testing.T) {
+	tests := []struct {
+		name        string
+		monitorType string
+		monitorName string
+		alertTitle  string
+		tags        []string
+		expected    bool
+	}{
+		{"watchdog type", "watchdog", "", "", nil, true},
+		{"Watchdog Type uppercase", "Watchdog", "", "", nil, true},
+		{"watchdog_anomaly type", "watchdog_anomaly", "", "", nil, true},
+		{"watchdog in name", "metric", "[Watchdog] CPU spike", "", nil, true},
+		{"watchdog in title", "metric", "Monitor", "Watchdog Alert", nil, true},
+		{"source:watchdog tag", "metric", "Monitor", "", []string{"source:watchdog"}, true},
+		{"monitor_type:watchdog tag", "metric", "Monitor", "", []string{"monitor_type:watchdog"}, true},
+		{"created_by:watchdog tag", "metric", "Monitor", "", []string{"created_by:watchdog"}, true},
+		{"not watchdog", "metric", "CPU high", "", []string{"env:prod"}, false},
+		{"empty fields", "", "", "", nil, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsWatchdog(tt.monitorType, tt.monitorName, tt.alertTitle, tt.tags)
+			if result != tt.expected {
+				t.Errorf("IsWatchdog(%q, %q, %q, %v) = %v, want %v",
+					tt.monitorType, tt.monitorName, tt.alertTitle, tt.tags, result, tt.expected)
+			}
+		})
 	}
 }
 

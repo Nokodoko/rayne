@@ -157,6 +157,7 @@ func (d *DDogServer) Run(ctx context.Context) error {
 	agentOrch.RegisterAgent(agents.NewClaudeAgent(agents.RoleDatabase))
 	agentOrch.RegisterAgent(agents.NewClaudeAgent(agents.RoleNetwork))
 	agentOrch.RegisterAgent(agents.NewClaudeAgent(agents.RoleLogs))
+	agentOrch.RegisterAgent(agents.NewClaudeAgent(agents.RoleWatchdog))
 
 	// Initialize processor orchestrator with tiered execution
 	procOrch := webhooks.NewProcessorOrchestrator(webhookStorage, agentOrch)

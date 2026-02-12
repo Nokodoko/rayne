@@ -12,6 +12,7 @@ Node.js 22, Express-style HTTP server, @anthropic-ai/claude-code, @anthropic-ai/
 
 ## Key Functions
 - `POST /analyze` -- Main RCA endpoint: receives webhook payload, pre-fetches Datadog data (logs, host info, events, monitor config), invokes Claude for analysis, generates embeddings, stores in Qdrant, creates Datadog Notebook
+- `POST /watchdog` -- Watchdog monitor analysis endpoint: similar to /analyze but with watchdog-specific prompt and notebook formatting. Creates "[Watchdog Alert]" titled notebooks with anomaly characterization, impact assessment, and correlation analysis
 - `POST /generate-notebook` -- Generates Datadog notebook from analysis results
 - `POST /tools/execute` -- Executes dd_lib Python tools
 - `POST /tools/create-function` -- Creates new dd_lib tool functions
@@ -19,6 +20,7 @@ Node.js 22, Express-style HTTP server, @anthropic-ai/claude-code, @anthropic-ai/
 - `GET /health` -- Health check
 - `invokeClaudeCode(prompt, workDir)` -- Invokes Claude Code CLI with dual auth support
 - `createDatadogNotebook(monitorId, analysis, data)` -- Creates Datadog API v1 notebook
+- `createWatchdogNotebook(payload, analysis, triggerTime, similarRCAs, urls)` -- Creates Watchdog-specific Datadog notebook with "[Watchdog Alert]" title
 - `generateEmbeddings(text)` -- Generates vector embeddings via Ollama
 - `storeRCA(monitorId, analysis, embedding)` -- Stores RCA in Qdrant
 - `searchSimilarRCAs(embedding, limit)` -- Finds similar past incidents
@@ -26,6 +28,8 @@ Node.js 22, Express-style HTTP server, @anthropic-ai/claude-code, @anthropic-ai/
 ## Data Types
 - Analyze request: `{payload: {monitor_id, monitor_name, alert_status, hostname, ...}, credentials: {api_key, app_key, base_url}}`
 - Analyze response: `{success, monitorId, analysis, notebook: {url}, timestamp}`
+- Watchdog request: Same as analyze request (payload object with webhook fields)
+- Watchdog response: `{success, monitorId, monitorName, monitorType: "watchdog", analysis, triggerTime, similarRCAs, notebook: {id, url}, timestamp}`
 - Tools: dd_lib Python functions (get_hosts, get_events, search_logs, etc.)
 
 ## Logging

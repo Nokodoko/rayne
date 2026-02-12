@@ -134,6 +134,11 @@ func NewRoleClassifier() *RoleClassifier {
 func (c *RoleClassifier) Classify(event *types.AlertEvent) AgentRole {
 	payload := event.Payload
 
+	// 0. Check for Watchdog monitors first (highest priority, special Datadog feature)
+	if IsWatchdog(payload.MonitorType, payload.MonitorName, payload.AlertTitle, payload.Tags) {
+		return RoleWatchdog
+	}
+
 	// 1. Check explicit monitor type
 	if role := c.classifyByMonitorType(payload.MonitorType); role != RoleGeneral {
 		return role
@@ -156,6 +161,35 @@ func (c *RoleClassifier) Classify(event *types.AlertEvent) AgentRole {
 
 	// 5. Default to infrastructure (most common)
 	return RoleInfrastructure
+}
+
+// IsWatchdog determines if a monitor is a Datadog Watchdog anomaly detection monitor.
+// Watchdog monitors can be identified by:
+// - monitor_type containing "watchdog"
+// - monitor name or alert title containing "watchdog"
+// - tags containing "source:watchdog" or "monitor_type:watchdog"
+func IsWatchdog(monitorType, monitorName, alertTitle string, tags []string) bool {
+	mt := strings.ToLower(monitorType)
+	if mt == "watchdog" || strings.Contains(mt, "watchdog") {
+		return true
+	}
+
+	if strings.Contains(strings.ToLower(monitorName), "watchdog") {
+		return true
+	}
+
+	if strings.Contains(strings.ToLower(alertTitle), "watchdog") {
+		return true
+	}
+
+	for _, tag := range tags {
+		tagLower := strings.ToLower(tag)
+		if tagLower == "source:watchdog" || tagLower == "monitor_type:watchdog" || tagLower == "created_by:watchdog" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // classifyByMonitorType checks the monitor type field

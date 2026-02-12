@@ -9,6 +9,7 @@ Go, net/http, database/sql, encoding/json, sync, context, lib/pq
 ## Contents
 - `handler.go` -- HTTP handlers for webhook CRUD operations and dispatcher stats
 - `types.go` -- WebhookProcessor interface, WebhookPayload, WebhookEvent, WebhookConfig, ProcessorResult structs
+- `classifier.go` -- Monitor type classification: IsWatchdogMonitor() and ClassifyMonitorType() for routing watchdog vs standard monitors
 - `storage.go` -- PostgreSQL storage (webhook_events, webhook_configs tables) with auto-migration
 - `dispatcher.go` -- Worker pool with bounded concurrency, backpressure queue, graceful shutdown
 - `orchestrator.go` -- ProcessorOrchestrator with tiered execution (Tier 1: fast parallel, Tier 2: agent analysis)
@@ -22,6 +23,8 @@ Go, net/http, database/sql, encoding/json, sync, context, lib/pq
 - `(h *Handler) ReceiveWebhook(w, r) (int, any)` -- Ingests webhook, stores event, submits to dispatcher
 - `(h *Handler) GetWebhookEvents(w, r) (int, any)` -- Paginated event retrieval
 - `(h *Handler) CreateWebhook(w, r) (int, any)` -- Creates webhook in Datadog via API
+- `IsWatchdogMonitor(payload) bool` -- Classifies if a webhook payload is from a Datadog Watchdog monitor
+- `ClassifyMonitorType(payload) string` -- Returns "watchdog" or "" for routing decisions
 - `NewDispatcher(orchestrator, config) *Dispatcher` -- Creates worker pool dispatcher
 - `(d *Dispatcher) Submit(ctx, event) error` -- Queues event with backpressure
 - `(d *Dispatcher) Shutdown()` -- Graceful shutdown with 30s timeout

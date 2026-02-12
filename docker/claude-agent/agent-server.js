@@ -416,6 +416,193 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = [], datado
     }
 }
 
+// Create Datadog Notebook for Watchdog monitor triggered events
+async function createWatchdogNotebook(payload, analysis, triggerTime, similarRCAs = [], datadogUrls = null) {
+    if (!DD_API_KEY || !DD_APP_KEY) {
+        console.log('[Watchdog Notebook] Skipping - DD_API_KEY or DD_APP_KEY not set');
+        return null;
+    }
+
+    const monitorId = payload.monitor_id || payload.monitorId;
+    const monitorName = payload.monitor_name || payload.monitorName;
+    const alertStatus = payload.alert_status || payload.alertStatus;
+    const hostname = payload.hostname || 'N/A';
+    const service = payload.service || 'N/A';
+    const tags = payload.tags || [];
+    const applicationTeam = payload.APPLICATION_TEAM || payload.application_team || 'N/A';
+    const timestamp = new Date().toISOString();
+
+    const ddBaseUrl = DD_APP_URL;
+    const urls = datadogUrls || {};
+
+    // Build quick links
+    let quickLinksMarkdown = '### Quick Links\n\n';
+    if (urls.watchdog) quickLinksMarkdown += `- [Watchdog Dashboard](${urls.watchdog})\n`;
+    if (urls.monitor) quickLinksMarkdown += `- [View Monitor](${urls.monitor})\n`;
+    if (urls.logsHost || urls.logsService) quickLinksMarkdown += `- [View Logs](${urls.logsHost || urls.logsService || urls.logsErrors})\n`;
+    if (urls.host) quickLinksMarkdown += `- [Host Infrastructure](${urls.host})\n`;
+    if (urls.apmService) quickLinksMarkdown += `- [APM Service](${urls.apmService})\n`;
+    if (urls.events) quickLinksMarkdown += `- [Watchdog Events](${urls.events})\n`;
+
+    // Header
+    const headerMarkdown = `# Watchdog Monitor Triggered\n\n` +
+        `**A Datadog Watchdog anomaly detection monitor has been triggered.**\n\n` +
+        `**Generated:** ${timestamp}\n\n` +
+        `---\n\n` +
+        `| Field | Value |\n` +
+        `|-------|-------|\n` +
+        `| Monitor Name | ${urls.monitor ? `[${monitorName}](${urls.monitor})` : monitorName} |\n` +
+        `| Monitor ID | ${monitorId} |\n` +
+        `| Alert Status | **${alertStatus}** |\n` +
+        `| Triggered At | ${triggerTime} |\n` +
+        `| Hostname | ${urls.host ? `[${hostname}](${urls.host})` : hostname} |\n` +
+        `| Service | ${urls.apmService ? `[${service}](${urls.apmService})` : service} |\n` +
+        `| Application Team | ${applicationTeam} |\n` +
+        `| Tags | ${tags.join(', ') || 'N/A'} |\n\n` +
+        quickLinksMarkdown;
+
+    // Similar incidents section
+    let similarRCAsMarkdown = '';
+    if (similarRCAs.length > 0) {
+        similarRCAsMarkdown = `\n\n## Similar Past Incidents\n\n`;
+        similarRCAs.forEach((rca, i) => {
+            const rcaMonitorName = rca.payload?.monitor_name || 'Unknown';
+            similarRCAsMarkdown += `### ${i + 1}. ${rcaMonitorName} (${(rca.score * 100).toFixed(0)}% similar)\n`;
+            similarRCAsMarkdown += `${rca.payload?.analysis?.substring(0, 300) || 'No analysis available'}...\n\n`;
+        });
+    }
+
+    // Truncate name for notebook title
+    const maxNameLen = 80 - 36; // "[Watchdog Alert] {name} - YYYY-MM-DD"
+    const truncatedName = monitorName.length > maxNameLen
+        ? monitorName.substring(0, maxNameLen - 3) + '...'
+        : monitorName;
+
+    const notebookData = {
+        data: {
+            type: "notebooks",
+            attributes: {
+                name: `[Watchdog Alert] ${truncatedName} - ${timestamp.split('T')[0]}`,
+                cells: [
+                    {
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: headerMarkdown
+                            }
+                        }
+                    },
+                    {
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: `## Watchdog Anomaly Analysis\n\n${analysis}`
+                            }
+                        }
+                    },
+                    // CPU metrics widget if hostname available
+                    ...(hostname !== 'N/A' ? [{
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "timeseries",
+                                show_legend: true,
+                                requests: [{
+                                    q: `avg:system.cpu.user{host:${hostname.split('.')[0]}*}`,
+                                    display_type: "line",
+                                    style: { line_width: "normal", palette: "dog_classic", line_type: "solid" }
+                                }],
+                                yaxis: { scale: "linear" },
+                                title: "CPU Usage"
+                            },
+                            graph_size: "m",
+                            time: null
+                        }
+                    }] : []),
+                    // Similar incidents
+                    ...(similarRCAs.length > 0 ? [{
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: similarRCAsMarkdown
+                            }
+                        }
+                    }] : []),
+                    // Footer
+                    {
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: `---\n\n` +
+                                    `*This watchdog alert report was automatically generated by Rayne Claude Agent.*\n\n` +
+                                    `**Actions:**\n` +
+                                    `${urls.watchdog ? `- [View Watchdog Dashboard](${urls.watchdog})\n` : ''}` +
+                                    `${urls.monitor ? `- [View Monitor](${urls.monitor})\n` : ''}` +
+                                    `${urls.monitor ? `- [Edit Monitor](${urls.monitor}/edit)\n` : ''}` +
+                                    `${urls.events ? `- [View Watchdog Events](${urls.events})\n` : ''}`
+                            }
+                        }
+                    }
+                ],
+                time: { live_span: "1h" },
+                status: "published"
+            }
+        }
+    };
+
+    try {
+        console.log(`[Watchdog Notebook] Creating notebook for monitor ${monitorId}`);
+
+        const response = await new Promise((resolve, reject) => {
+            const urlObj = new URL(`${DD_API_URL}/api/v1/notebooks`);
+            const options = {
+                hostname: urlObj.hostname,
+                port: urlObj.port || 443,
+                path: urlObj.pathname,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'DD-API-KEY': DD_API_KEY,
+                    'DD-APPLICATION-KEY': DD_APP_KEY
+                }
+            };
+
+            const req = https.request(options, (res) => {
+                let body = '';
+                res.on('data', chunk => body += chunk);
+                res.on('end', () => {
+                    try {
+                        resolve({ status: res.statusCode, data: JSON.parse(body) });
+                    } catch (e) {
+                        resolve({ status: res.statusCode, data: body });
+                    }
+                });
+            });
+
+            req.on('error', reject);
+            req.write(JSON.stringify(notebookData));
+            req.end();
+        });
+
+        if (response.status === 200 || response.status === 201) {
+            const notebookId = response.data?.data?.id;
+            const notebookUrl = `${DD_APP_URL}/notebook/${notebookId}`;
+            console.log(`[Watchdog Notebook] Created: ${notebookUrl}`);
+            return { id: notebookId, url: notebookUrl };
+        } else {
+            console.error(`[Watchdog Notebook] Failed: ${response.status}`, response.data);
+            return null;
+        }
+    } catch (err) {
+        console.error(`[Watchdog Notebook] Error: ${err.message}`);
+        return null;
+    }
+}
+
 // Generate embeddings using Ollama with Gemma
 async function generateEmbeddings(text) {
     try {
@@ -1238,6 +1425,241 @@ If logs show specific errors, quote them. If host metrics are abnormal, mention 
 
         } catch (err) {
             console.error(`[Analyze] Error: ${err.message}`);
+            sendJson(res, 500, {
+                error: err.message,
+                timestamp: new Date().toISOString()
+            });
+        }
+        return;
+    }
+
+    // Watchdog Analysis endpoint - handles Datadog Watchdog anomaly detection monitors
+    // Similar to /analyze but with watchdog-specific prompt and notebook formatting
+    if (url.pathname === '/watchdog' && req.method === 'POST') {
+        try {
+            const body = await parseBody(req);
+            const { payload } = body;
+
+            const fullPayload = payload || body;
+            let monitorId = fullPayload.monitor_id || fullPayload.monitorId;
+            let monitorName = fullPayload.monitor_name || fullPayload.monitorName;
+            const alertStatus = fullPayload.alert_status || fullPayload.alertStatus;
+            const hostname = fullPayload.hostname;
+            const service = fullPayload.service;
+            const scope = fullPayload.scope;
+            const tags = fullPayload.tags;
+            const applicationTeam = fullPayload.APPLICATION_TEAM || fullPayload.application_team;
+            const triggerTime = new Date(fullPayload.timestamp ? fullPayload.timestamp * 1000 : Date.now()).toISOString();
+
+            // Resolve monitor ID from description URL if not provided
+            if (!monitorId && fullPayload.DETAILED_DESCRIPTION) {
+                const match = fullPayload.DETAILED_DESCRIPTION.match(/monitors\/(\d+)/);
+                if (match) {
+                    monitorId = parseInt(match[1], 10);
+                }
+            }
+            if (!monitorId) {
+                monitorId = Date.now();
+            }
+
+            if (!monitorName) {
+                monitorName = fullPayload.ALERT_TITLE || fullPayload.alert_title || 'Watchdog Monitor';
+            }
+
+            fullPayload.monitor_id = monitorId;
+            fullPayload.monitor_name = monitorName;
+
+            console.log(`[Watchdog] Processing watchdog alert for monitor ${monitorId}: ${monitorName}`);
+
+            // Send desktop notification
+            await sendDesktopNotification(fullPayload);
+
+            // Generate embedding for similarity search
+            const alertText = `Watchdog Monitor: ${monitorName} Status: ${alertStatus} Host: ${hostname || 'N/A'} Service: ${service || 'N/A'}`;
+            let similarRCAs = [];
+            const alertEmbedding = await generateEmbeddings(alertText);
+
+            if (alertEmbedding) {
+                similarRCAs = await searchSimilarRCAs(alertEmbedding, 3);
+                console.log(`[Watchdog] Found ${similarRCAs.length} similar past incidents`);
+            }
+
+            // Build similar RCA context
+            let similarRCAContext = '';
+            if (similarRCAs.length > 0) {
+                similarRCAContext = `\n## Similar Past Watchdog/RCA Incidents\n`;
+                similarRCAs.forEach((rca, i) => {
+                    similarRCAContext += `\n### Past Incident ${i + 1} (similarity: ${(rca.score * 100).toFixed(1)}%)\n`;
+                    similarRCAContext += `- Monitor: ${rca.payload.monitor_name}\n`;
+                    similarRCAContext += `- Service: ${rca.payload.service || 'N/A'}\n`;
+                    similarRCAContext += `- Analysis: ${rca.payload.analysis?.substring(0, 500) || 'N/A'}...\n`;
+                });
+            }
+
+            // Pre-fetch Datadog data
+            console.log(`[Watchdog] Pre-fetching Datadog data for analysis...`);
+
+            const ddBaseUrl = DD_APP_URL;
+            const nowTs = Math.floor(Date.now() / 1000) * 1000;
+            const thirtyMinAgo = nowTs - (30 * 60 * 1000);
+
+            const datadogUrls = {
+                monitor: monitorId ? `${ddBaseUrl}/monitors/${monitorId}` : null,
+                host: hostname ? `${ddBaseUrl}/infrastructure?host=${encodeURIComponent(hostname.split('.')[0])}` : null,
+                hostDashboard: hostname ? `${ddBaseUrl}/dash/integration/system_overview?tpl_var_host=${encodeURIComponent(hostname.split('.')[0])}` : null,
+                logsHost: hostname ? `${ddBaseUrl}/logs?query=${encodeURIComponent(`host:${hostname.split('.')[0]}*`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}` : null,
+                logsService: service ? `${ddBaseUrl}/logs?query=${encodeURIComponent(`service:${service}`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}` : null,
+                logsErrors: `${ddBaseUrl}/logs?query=${encodeURIComponent(`status:error`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}`,
+                apmService: service ? `${ddBaseUrl}/apm/services/${service}/operations` : null,
+                events: `${ddBaseUrl}/event/explorer?query=${encodeURIComponent('sources:watchdog')}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}`,
+                watchdog: `${ddBaseUrl}/watchdog`,
+                metrics: hostname ? `${ddBaseUrl}/metric/explorer?exp_metric=system.cpu.user&exp_scope=${encodeURIComponent(`host:${hostname.split('.')[0]}`)}` : null,
+            };
+
+            let logsData = null;
+            let hostData = null;
+            let eventsData = null;
+            let monitorData = null;
+
+            // Fetch logs
+            try {
+                const logQuery = hostname
+                    ? `host:${hostname.split('.')[0]}* status:error OR status:warn`
+                    : service ? `service:${service} status:error OR status:warn` : `status:error`;
+                logsData = await executeDDLibTool('search_logs', {
+                    query: logQuery, from_time: 'now-30m', to_time: 'now', limit: 20
+                });
+                datadogUrls.logsQuery = `${ddBaseUrl}/logs?query=${encodeURIComponent(logQuery)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}&live=true`;
+            } catch (err) {
+                console.log(`[Watchdog] Failed to fetch logs: ${err.message}`);
+            }
+
+            // Fetch host info
+            if (hostname) {
+                try {
+                    hostData = await executeDDLibTool('get_host_info', { hostname: hostname.split('.')[0] });
+                } catch (err) {
+                    console.log(`[Watchdog] Failed to fetch host info: ${err.message}`);
+                }
+            }
+
+            // Fetch events
+            try {
+                eventsData = await executeDDLibTool('get_events', {
+                    from_time: Math.floor(Date.now() / 1000) - 1800,
+                    to_time: Math.floor(Date.now() / 1000)
+                });
+            } catch (err) {
+                console.log(`[Watchdog] Failed to fetch events: ${err.message}`);
+            }
+
+            // Fetch monitor details
+            if (monitorId) {
+                try {
+                    monitorData = await executeDDLibTool('get_monitor_details', { monitor_id: monitorId });
+                } catch (err) {
+                    console.log(`[Watchdog] Failed to fetch monitor details: ${err.message}`);
+                }
+            }
+
+            // Build data context
+            let datadogContext = '\n## Live Datadog Data\n';
+            datadogContext += `\n**Quick Links:** `;
+            datadogContext += `[Watchdog Dashboard](${datadogUrls.watchdog}) | `;
+            datadogContext += datadogUrls.monitor ? `[Monitor](${datadogUrls.monitor}) | ` : '';
+            datadogContext += datadogUrls.logsQuery ? `[Logs](${datadogUrls.logsQuery}) | ` : '';
+            datadogContext += datadogUrls.host ? `[Host](${datadogUrls.host}) | ` : '';
+            datadogContext += datadogUrls.events ? `[Events](${datadogUrls.events})` : '';
+            datadogContext += `\n`;
+
+            if (logsData && logsData.logs && logsData.logs.length > 0) {
+                datadogContext += `\n### Recent Error/Warning Logs\nFound ${logsData.count} relevant entries:\n\n`;
+                logsData.logs.slice(0, 10).forEach((log, i) => {
+                    datadogContext += `**${i + 1}. [${log.status || 'INFO'}] ${log.timestamp || 'N/A'}**\n`;
+                    datadogContext += `- Service: ${log.service || 'unknown'}\n`;
+                    datadogContext += `- Host: ${log.host || 'unknown'}\n`;
+                    datadogContext += `- Message: ${(log.message || '').substring(0, 300)}\n\n`;
+                });
+            }
+
+            if (hostData && !hostData.error) {
+                datadogContext += `\n### Host: ${hostData.hostname || hostname}\n`;
+                datadogContext += `- Status: ${hostData.up ? 'UP' : 'DOWN'}\n`;
+                if (hostData.metrics) {
+                    datadogContext += `- CPU: ${hostData.metrics.cpu || 'N/A'}%\n`;
+                    datadogContext += `- Memory: ${hostData.metrics.memory || 'N/A'}%\n`;
+                    datadogContext += `- Load: ${hostData.metrics.load || 'N/A'}\n`;
+                }
+            }
+
+            if (monitorData && !monitorData.error) {
+                datadogContext += `\n### Monitor Configuration\n`;
+                datadogContext += `- Type: ${monitorData.type}\n`;
+                datadogContext += `- Query: \`${monitorData.query || 'N/A'}\`\n`;
+            }
+
+            // Watchdog-specific Claude prompt
+            const prompt = `You are an SRE analyzing a **Datadog Watchdog** anomaly detection alert. Watchdog uses AI/ML to automatically detect anomalies in infrastructure metrics, application performance, and log patterns without requiring manual threshold configuration.
+
+## Full Alert Payload
+${JSON.stringify(fullPayload, null, 2)}
+
+## Watchdog Alert Summary
+- **Monitor Name:** ${monitorName}
+- **Monitor ID:** ${monitorId}
+- **Alert Status:** ${alertStatus}
+- **Triggered At:** ${triggerTime}
+- **Hostname:** ${hostname || 'N/A'}
+- **Service:** ${service || 'N/A'}
+- **Scope:** ${scope || 'N/A'}
+- **Application Team:** ${applicationTeam || 'N/A'}
+- **Tags:** ${tags?.join(', ') || 'N/A'}
+
+${datadogContext}
+
+${similarRCAContext}
+
+## Watchdog Analysis Instructions
+
+Watchdog alerts indicate ML-detected anomalies that deviate significantly from historical baselines. Analyze this alert with the following focus:
+
+1) **Anomaly Characterization** - What specific anomaly did Watchdog detect? Describe the metric/behavior that deviated from the expected baseline.
+2) **Impact Assessment** - What is the blast radius? Which services, hosts, or users are affected?
+3) **Correlation Analysis** - Are there correlated anomalies across other metrics, services, or infrastructure? Check the logs and events for related patterns.
+4) **Root Cause Hypothesis** - Based on the anomaly pattern and correlated data, what is the most likely underlying cause?
+5) **Recommended Actions** - Two specific, actionable steps to investigate or mitigate the anomaly.
+6) **Confidence Level** - low/medium/high based on data availability and correlation strength.
+
+Ground your analysis in the live Datadog data provided. Quote specific log entries, metrics, or events as evidence.`;
+
+            const result = await invokeClaudeCode(prompt);
+
+            // Store in vector DB
+            if (alertEmbedding) {
+                await storeRCA(monitorId, monitorName, result, alertEmbedding, fullPayload);
+                console.log(`[Watchdog] Analysis stored in vector DB`);
+            }
+
+            // Create Watchdog-specific notebook
+            const notebook = await createWatchdogNotebook(fullPayload, result, triggerTime, similarRCAs, datadogUrls);
+            if (notebook) {
+                console.log(`[Watchdog] Notebook created: ${notebook.url}`);
+            }
+
+            sendJson(res, 200, {
+                success: true,
+                monitorId,
+                monitorName,
+                monitorType: 'watchdog',
+                analysis: result,
+                triggerTime,
+                similarRCAs: similarRCAs.length,
+                notebook: notebook ? { id: notebook.id, url: notebook.url } : null,
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (err) {
+            console.error(`[Watchdog] Error: ${err.message}`);
             sendJson(res, 500, {
                 error: err.message,
                 timestamp: new Date().toISOString()

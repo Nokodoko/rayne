@@ -125,7 +125,8 @@ func (a *ClaudeAgent) Conclude(ctx context.Context, agentCtx AgentContext) *Anal
 	}
 }
 
-// invokeAnalysis calls the Claude agent sidecar
+// invokeAnalysis calls the Claude agent sidecar.
+// Routes watchdog monitors to /watchdog endpoint, all others to /analyze.
 func (a *ClaudeAgent) invokeAnalysis(ctx context.Context, event *types.AlertEvent) (string, error) {
 	payload := event.Payload
 
@@ -170,7 +171,13 @@ func (a *ClaudeAgent) invokeAnalysis(ctx context.Context, event *types.AlertEven
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", a.agentURL+"/analyze", bytes.NewBuffer(jsonBody))
+	// Route watchdog monitors to the /watchdog endpoint
+	endpoint := "/analyze"
+	if a.role == RoleWatchdog {
+		endpoint = "/watchdog"
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", a.agentURL+endpoint, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
