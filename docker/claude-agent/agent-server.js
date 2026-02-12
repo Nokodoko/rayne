@@ -433,16 +433,36 @@ async function createWatchdogNotebook(payload, analysis, triggerTime, similarRCA
     const timestamp = new Date().toISOString();
 
     const ddBaseUrl = DD_APP_URL;
-    const urls = datadogUrls || {};
+    const nowTs = Math.floor(Date.now() / 1000) * 1000;
+    const thirtyMinAgo = nowTs - (30 * 60 * 1000);
+
+    const urls = datadogUrls || {
+        watchdog: `${ddBaseUrl}/watchdog`,
+        monitor: monitorId ? `${ddBaseUrl}/monitors/${monitorId}` : null,
+        host: hostname !== 'N/A' ? `${ddBaseUrl}/infrastructure?host=${encodeURIComponent(hostname.split('.')[0])}` : null,
+        hostDashboard: hostname !== 'N/A' ? `${ddBaseUrl}/dash/integration/system_overview?tpl_var_host=${encodeURIComponent(hostname.split('.')[0])}` : null,
+        logsHost: hostname !== 'N/A' ? `${ddBaseUrl}/logs?query=${encodeURIComponent(`host:${hostname.split('.')[0]}*`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}` : null,
+        logsService: service !== 'N/A' ? `${ddBaseUrl}/logs?query=${encodeURIComponent(`service:${service}`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}` : null,
+        logsErrors: `${ddBaseUrl}/logs?query=${encodeURIComponent(`status:error`)}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}`,
+        apmService: service !== 'N/A' ? `${ddBaseUrl}/apm/services/${service}/operations` : null,
+        apmTraces: service !== 'N/A' ? `${ddBaseUrl}/apm/traces?query=${encodeURIComponent(`service:${service}`)}&start=${thirtyMinAgo}&end=${nowTs}` : null,
+        apmErrors: service !== 'N/A' ? `${ddBaseUrl}/apm/traces?query=${encodeURIComponent(`service:${service} status:error`)}&start=${thirtyMinAgo}&end=${nowTs}` : null,
+        events: `${ddBaseUrl}/event/explorer?query=${encodeURIComponent('sources:*')}&from_ts=${thirtyMinAgo}&to_ts=${nowTs}`,
+        dbm: service !== 'N/A' ? `${ddBaseUrl}/databases?query=${encodeURIComponent(`service:${service}`)}` : null,
+        dbmQueries: `${ddBaseUrl}/databases/queries`,
+        metrics: hostname !== 'N/A' ? `${ddBaseUrl}/metric/explorer?exp_metric=system.cpu.user&exp_scope=${encodeURIComponent(`host:${hostname.split('.')[0]}`)}` : null,
+    };
 
     // Build quick links
-    let quickLinksMarkdown = '### Quick Links\n\n';
-    if (urls.watchdog) quickLinksMarkdown += `- [Watchdog Dashboard](${urls.watchdog})\n`;
-    if (urls.monitor) quickLinksMarkdown += `- [View Monitor](${urls.monitor})\n`;
-    if (urls.logsHost || urls.logsService) quickLinksMarkdown += `- [View Logs](${urls.logsHost || urls.logsService || urls.logsErrors})\n`;
-    if (urls.host) quickLinksMarkdown += `- [Host Infrastructure](${urls.host})\n`;
-    if (urls.apmService) quickLinksMarkdown += `- [APM Service](${urls.apmService})\n`;
-    if (urls.events) quickLinksMarkdown += `- [Watchdog Events](${urls.events})\n`;
+    let quickLinksMarkdown = '### 🔗 Quick Links\n\n';
+    if (urls.watchdog) quickLinksMarkdown += `- [🐕 Watchdog Dashboard](${urls.watchdog})\n`;
+    if (urls.monitor) quickLinksMarkdown += `- [📊 View Monitor](${urls.monitor})\n`;
+    if (urls.logsHost || urls.logsService) quickLinksMarkdown += `- [📋 View Logs](${urls.logsHost || urls.logsService || urls.logsErrors})\n`;
+    if (urls.host) quickLinksMarkdown += `- [🖥️ Host Infrastructure](${urls.host})\n`;
+    if (urls.hostDashboard) quickLinksMarkdown += `- [📈 Host Dashboard](${urls.hostDashboard})\n`;
+    if (urls.metrics) quickLinksMarkdown += `- [📉 Metrics Explorer](${urls.metrics})\n`;
+    if (urls.apmService) quickLinksMarkdown += `- [🔍 APM Service](${urls.apmService})\n`;
+    if (urls.events) quickLinksMarkdown += `- [📅 Watchdog Events](${urls.events})\n`;
 
     // Header
     const headerMarkdown = `# Watchdog Monitor Triggered\n\n` +
@@ -521,6 +541,33 @@ async function createWatchdogNotebook(payload, analysis, triggerTime, similarRCA
                             time: null
                         }
                     }] : []),
+                    // Related logs cell (if hostname or service available)
+                    ...((hostname !== 'N/A' || service !== 'N/A') ? [{
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: `## 📋 Related Logs\n\n` +
+                                    `${urls.logsHost ? `- [View Host Logs](${urls.logsHost})\n` : ''}` +
+                                    `${urls.logsService ? `- [View Service Logs](${urls.logsService})\n` : ''}` +
+                                    `- [View Error Logs](${urls.logsErrors})\n`
+                            }
+                        }
+                    }] : []),
+                    // APM section (if service available)
+                    ...(service !== 'N/A' ? [{
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: `## 🔍 APM & Traces\n\n` +
+                                    `${urls.apmService ? `- [Service Overview](${urls.apmService})\n` : ''}` +
+                                    `${urls.apmTraces ? `- [View All Traces](${urls.apmTraces})\n` : ''}` +
+                                    `${urls.apmErrors ? `- [Error Traces Only](${urls.apmErrors})\n` : ''}` +
+                                    `${urls.dbm ? `- [Database Monitoring](${urls.dbm})\n` : ''}`
+                            }
+                        }
+                    }] : []),
                     // Similar incidents
                     ...(similarRCAs.length > 0 ? [{
                         type: "notebook_cells",
@@ -540,10 +587,10 @@ async function createWatchdogNotebook(payload, analysis, triggerTime, similarRCA
                                 text: `---\n\n` +
                                     `*This watchdog alert report was automatically generated by Rayne Claude Agent.*\n\n` +
                                     `**Actions:**\n` +
-                                    `${urls.watchdog ? `- [View Watchdog Dashboard](${urls.watchdog})\n` : ''}` +
-                                    `${urls.monitor ? `- [View Monitor](${urls.monitor})\n` : ''}` +
-                                    `${urls.monitor ? `- [Edit Monitor](${urls.monitor}/edit)\n` : ''}` +
-                                    `${urls.events ? `- [View Watchdog Events](${urls.events})\n` : ''}`
+                                    `${urls.watchdog ? `- [🐕 View Watchdog Dashboard](${urls.watchdog})\n` : ''}` +
+                                    `${urls.monitor ? `- [📊 View Monitor](${urls.monitor})\n` : ''}` +
+                                    `${urls.monitor ? `- [✏️ Edit Monitor](${urls.monitor}/edit)\n` : ''}` +
+                                    `${urls.events ? `- [📅 View Watchdog Events](${urls.events})\n` : ''}`
                             }
                         }
                     }
