@@ -195,10 +195,86 @@ func (a *ClaudeAgent) invokeAnalysis(ctx context.Context, event *types.AlertEven
 	}
 
 	if response.Error != "" {
-		return "", fmt.Errorf("agent error: %s", response.Error)
+		errorDetail := response.Error
+		if response.ErrorType != "" {
+			errorDetail = fmt.Sprintf("[%s] %s", response.ErrorType, response.Error)
+		}
+		if response.RetriesExhausted {
+			errorDetail += " (retries exhausted)"
+		}
+		return "", fmt.Errorf("agent error: %s", errorDetail)
 	}
 
 	return response.Analysis, nil
+}
+
+// InvokeRecovery calls the Claude agent sidecar's /recover endpoint
+// to update an existing notebook when a monitor recovers.
+func (a *ClaudeAgent) InvokeRecovery(ctx context.Context, event *types.AlertEvent) error {
+	payload := event.Payload
+
+	monitorID := payload.MonitorID
+	if monitorID == 0 {
+		monitorID = payload.AlertID
+	}
+	monitorName := payload.MonitorName
+	if monitorName == "" {
+		monitorName = payload.AlertTitleCustom
+	}
+	if monitorName == "" {
+		monitorName = payload.AlertTitle
+	}
+
+	req := claudeRequest{
+		Payload: claudePayload{
+			MonitorID:           monitorID,
+			MonitorName:         monitorName,
+			AlertStatus:         payload.AlertStatus,
+			Hostname:            payload.Hostname,
+			Service:             payload.Service,
+			Scope:               payload.Scope,
+			Tags:                payload.Tags,
+			AlertState:          payload.AlertState,
+			AlertTitle:          payload.AlertTitleCustom,
+			ApplicationTeam:     payload.ApplicationTeam,
+			ApplicationLongname: payload.ApplicationLongname,
+			DetailedDescription: payload.DetailedDescription,
+			Impact:              payload.Impact,
+			Metric:              payload.Metric,
+			SupportGroup:        payload.SupportGroup,
+			Threshold:           payload.Threshold,
+			Value:               payload.Value,
+			Urgency:             payload.Urgency,
+		},
+	}
+
+	jsonBody, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("failed to marshal recovery request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", a.agentURL+"/recover", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create recovery request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpclient.AgentClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("recovery request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var response claudeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return fmt.Errorf("failed to decode recovery response: %w", err)
+	}
+
+	if response.Error != "" {
+		return fmt.Errorf("recovery error: %s", response.Error)
+	}
+
+	return nil
 }
 
 // Claude sidecar request/response types
@@ -236,4 +312,15 @@ type claudeResponse struct {
 	Notebook  *struct {
 		URL string `json:"url"`
 	} `json:"notebook,omitempty"`
+
+	// Failure alerting fields (populated on error responses)
+	ErrorType        string `json:"error_type,omitempty"`
+	RetriesExhausted bool   `json:"retries_exhausted,omitempty"`
+	FailureEvent     *struct {
+		ID interface{} `json:"id,omitempty"`
+	} `json:"failure_event,omitempty"`
+	FailureNotebook *struct {
+		ID  interface{} `json:"id,omitempty"`
+		URL string      `json:"url,omitempty"`
+	} `json:"failure_notebook,omitempty"`
 }

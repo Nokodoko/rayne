@@ -52,6 +52,10 @@ EXPOSE 9000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:9000/health || exit 1
 
+# GoNotebook training material is mounted at runtime via k8s hostPath volume
+# Expected at: /app/gonotebook (set via GONOTEBOOK_PATH env var)
+# Contains Ultimate Go Notebook + Ardan Labs Go Training material for RAG
+
 # Set Python path for dd_lib
 ENV PYTHONPATH=/app/dd_lib
 

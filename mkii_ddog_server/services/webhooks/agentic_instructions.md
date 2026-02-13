@@ -12,7 +12,7 @@ Go, net/http, database/sql, encoding/json, sync, context, lib/pq
 - `classifier.go` -- Monitor type classification: IsWatchdogMonitor() and ClassifyMonitorType() for routing watchdog vs standard monitors
 - `storage.go` -- PostgreSQL storage (webhook_events, webhook_configs tables) with auto-migration
 - `dispatcher.go` -- Worker pool with bounded concurrency, backpressure queue, graceful shutdown
-- `orchestrator.go` -- ProcessorOrchestrator with tiered execution (Tier 1: fast parallel, Tier 2: agent analysis)
+- `orchestrator.go` -- ProcessorOrchestrator with tiered execution (Tier 1: fast parallel, Tier 2: agent analysis or recovery). Includes resolveServiceName() for accurate service identification and toAlertEvent() for webhook-to-alert conversion
 - `processor.go` -- Legacy Processor with sequential Register/Unregister/Process pattern
 - `downtime.go` -- DowntimeService for creating Datadog API v2 downtimes after monitor recovery
 - `processors/` -- Subdirectory containing WebhookProcessor implementations
@@ -29,7 +29,9 @@ Go, net/http, database/sql, encoding/json, sync, context, lib/pq
 - `(d *Dispatcher) Submit(ctx, event) error` -- Queues event with backpressure
 - `(d *Dispatcher) Shutdown()` -- Graceful shutdown with 30s timeout
 - `NewProcessorOrchestrator(storage, agentOrch) *ProcessorOrchestrator` -- Creates tiered orchestrator
-- `(o *ProcessorOrchestrator) Process(ctx, event) OrchestratorResult` -- Tiered processing: fast parallel then agent
+- `(o *ProcessorOrchestrator) Process(ctx, event) OrchestratorResult` -- Tiered processing: fast parallel, then agent analysis (Alert/Warn) or agent recovery (OK/Recovered). Recovery path calls agentOrch.Recover() to update existing notebooks
+- `resolveServiceName(p WebhookPayload) string` -- Determines actual service name. Priority: APPLICATION_TEAM > scope application_team tag > tags application_team > service (if not monitor type pattern) > raw service. Prevents monitor types like "http-check" from appearing as service names
+- `toAlertEvent(event *WebhookEvent) *types.AlertEvent` -- Converts webhook to alert event, filling standard fields from custom/uppercase equivalents (ALERT_STATE -> alert_status, APPLICATION_TEAM -> service via resolveServiceName)
 - `(s *Storage) InitTables() error` -- Creates webhook_events and webhook_configs tables with indexes
 - `(s *Storage) StoreEventWithAccount(payload, accountID, accountName) (*WebhookEvent, error)` -- Stores event with account
 - `(d *DowntimeService) CreateForMonitor(monitorID, scope, duration) error` -- Creates Datadog downtime
