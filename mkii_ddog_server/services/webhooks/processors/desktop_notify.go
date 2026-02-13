@@ -101,40 +101,46 @@ func (p *DesktopNotifyProcessor) Process(event *webhooks.WebhookEvent, config *w
 	}
 	log.Printf("[NOTIFY-PROC] Notification sent successfully")
 
-	title := event.Payload.AlertTitleCustom
-	if title == "" {
-		title = event.Payload.MonitorName
-	}
-	if title == "" {
-		title = "Datadog Webhook"
-	}
+	title := resolveTitle(event.Payload)
 
 	result.Success = true
 	result.Message = fmt.Sprintf("notification sent: %s", title)
 	return result
 }
 
+// resolveTitle extracts the best available title from a webhook payload.
+// Watchdog alerts arrive with empty standard fields, so we fall back through
+// several fields until we find content.
+func resolveTitle(p webhooks.WebhookPayload) string {
+	if p.MonitorName != "" {
+		return p.MonitorName
+	}
+	if p.AlertTitleCustom != "" {
+		return p.AlertTitleCustom
+	}
+	if p.AlertTitle != "" {
+		return p.AlertTitle
+	}
+	if p.DetailedDescription != "" {
+		// Use first line only — DETAILED_DESCRIPTION can be very long
+		if i := strings.IndexByte(p.DetailedDescription, '\n'); i > 0 {
+			return p.DetailedDescription[:i]
+		}
+		return p.DetailedDescription
+	}
+	return "Datadog Webhook"
+}
+
 // sendNotification sends the notification to all configured servers
 func (p *DesktopNotifyProcessor) sendNotification(webhookPayload webhooks.WebhookPayload) error {
 	log.Printf("[NOTIFY] Sending to %d servers: %v", len(p.serverURLs), p.serverURLs)
-	// Get application_team - first try direct field, then parse from alert_title
-	applicationTeam := webhookPayload.ApplicationTeam
-	if applicationTeam == "" {
-		// Try parsing from alert_title (format: "... application_team:value,...")
-		applicationTeam = parseApplicationTeam(webhookPayload.AlertTitle)
-	}
-	if applicationTeam == "" {
-		// Also try the custom alert title field
-		applicationTeam = parseApplicationTeam(webhookPayload.AlertTitleCustom)
-	}
-	if applicationTeam == "" {
-		applicationTeam = "unknown"
-	}
 
-	// Simple payload with bomb emoji and application team
+	title := resolveTitle(webhookPayload)
+
+	// Build notification payload
 	payload := map[string]string{
-		"title":   "💣 " + applicationTeam,
-		"message": applicationTeam,
+		"title":   "💣 " + title,
+		"message": title,
 		"urgency": "critical",
 	}
 

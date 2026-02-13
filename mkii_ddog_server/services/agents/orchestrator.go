@@ -13,12 +13,13 @@ import (
 // AgentOrchestrator is the single entry point for all agent-based analysis.
 // It provides semaphore-bounded concurrency, role classification, and RLM coordination.
 type AgentOrchestrator struct {
-	classifier     *RoleClassifier
-	agents         map[AgentRole]Agent
-	defaultAgent   Agent
-	rlmCoordinator *RLMCoordinator
-	semaphore      chan struct{}
-	mu             sync.RWMutex
+	classifier      *RoleClassifier
+	agents          map[AgentRole]Agent
+	defaultAgent    Agent
+	rlmCoordinator  *RLMCoordinator
+	failureAlerter  *FailureAlerter
+	semaphore       chan struct{}
+	mu              sync.RWMutex
 
 	// Metrics
 	activeCount    int64
@@ -58,6 +59,7 @@ func NewAgentOrchestrator(config OrchestratorConfig) *AgentOrchestrator {
 		classifier:     NewRoleClassifier(),
 		agents:         make(map[AgentRole]Agent),
 		rlmCoordinator: NewRLMCoordinator(config.RLMMaxIterations),
+		failureAlerter: NewFailureAlerter(),
 		semaphore:      make(chan struct{}, config.MaxConcurrent),
 	}
 }
@@ -129,6 +131,8 @@ func (o *AgentOrchestrator) Analyze(ctx context.Context, event *types.AlertEvent
 	atomic.AddInt64(&o.totalProcessed, 1)
 	if err != nil || (result != nil && !result.Success) {
 		atomic.AddInt64(&o.totalErrors, 1)
+		// Report failure to Datadog as an event (best-effort)
+		go o.failureAlerter.ReportFailure(ctx, result, err)
 	}
 
 	if err != nil {
@@ -142,10 +146,114 @@ func (o *AgentOrchestrator) Analyze(ctx context.Context, event *types.AlertEvent
 	return result, nil
 }
 
-// ShouldAnalyze determines if an event should trigger agent analysis
+// ShouldAnalyze determines if an event should trigger agent analysis.
+// Custom webhook templates often use uppercase fields (ALERT_STATE) while
+// standard fields (alert_status) are empty, so we check both.
 func (o *AgentOrchestrator) ShouldAnalyze(event *types.AlertEvent) bool {
 	status := event.Payload.AlertStatus
-	return status == "Alert" || status == "Warn"
+	if status == "Alert" || status == "Warn" {
+		return true
+	}
+	// Fallback: check uppercase ALERT_STATE field (custom webhook templates)
+	state := event.Payload.AlertState
+	if state == "Triggered" || state == "Alert" || state == "Warn" {
+		return true
+	}
+	// Fallback: if DETAILED_DESCRIPTION has content, it's a real alert
+	if event.Payload.DetailedDescription != "" {
+		return true
+	}
+	return false
+}
+
+// ShouldRecover determines if an event is a recovery notification.
+// Recovery events indicate a monitor has transitioned back to OK/Recovered status.
+func (o *AgentOrchestrator) ShouldRecover(event *types.AlertEvent) bool {
+	status := event.Payload.AlertStatus
+	if status == "OK" || status == "Recovered" {
+		return true
+	}
+	// Check uppercase ALERT_STATE field (custom webhook templates)
+	state := event.Payload.AlertState
+	if state == "OK" || state == "Recovered" || state == "Resolved" {
+		return true
+	}
+	return false
+}
+
+// Recover notifies the agent sidecar that a monitor has recovered,
+// so it can update the existing notebook's status to RESOLVED.
+func (o *AgentOrchestrator) Recover(ctx context.Context, event *types.AlertEvent) (*AnalysisResult, error) {
+	// Acquire semaphore (bounded concurrency)
+	select {
+	case o.semaphore <- struct{}{}:
+		defer func() { <-o.semaphore }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	log.Printf("[AGENT-ORCH] Starting recovery for monitor %d (status: %s)",
+		event.Payload.MonitorID, event.Payload.AlertStatus)
+
+	// Use the default agent (ClaudeAgent) to invoke recovery
+	agent := o.defaultAgent
+	if agent == nil {
+		// Try to find any registered agent
+		o.mu.RLock()
+		for _, a := range o.agents {
+			agent = a
+			break
+		}
+		o.mu.RUnlock()
+	}
+
+	if agent == nil {
+		return &AnalysisResult{
+			MonitorID:   event.Payload.MonitorID,
+			MonitorName: event.Payload.MonitorName,
+			AlertStatus: event.Payload.AlertStatus,
+			Success:     false,
+			Error:       "no agent available for recovery",
+			StartedAt:   time.Now(),
+			CompletedAt: time.Now(),
+		}, nil
+	}
+
+	// Type-assert to ClaudeAgent to call recovery-specific method
+	if claudeAgent, ok := agent.(*ClaudeAgent); ok {
+		err := claudeAgent.InvokeRecovery(ctx, event)
+		if err != nil {
+			return &AnalysisResult{
+				MonitorID:   event.Payload.MonitorID,
+				MonitorName: event.Payload.MonitorName,
+				AlertStatus: event.Payload.AlertStatus,
+				Success:     false,
+				Error:       err.Error(),
+				StartedAt:   time.Now(),
+				CompletedAt: time.Now(),
+			}, nil
+		}
+		return &AnalysisResult{
+			MonitorID:   event.Payload.MonitorID,
+			MonitorName: event.Payload.MonitorName,
+			AlertStatus: event.Payload.AlertStatus,
+			Success:     true,
+			Summary:     "Recovery notification sent to agent sidecar",
+			AgentRole:   claudeAgent.Role(),
+			StartedAt:   time.Now(),
+			CompletedAt: time.Now(),
+		}, nil
+	}
+
+	return &AnalysisResult{
+		MonitorID:   event.Payload.MonitorID,
+		MonitorName: event.Payload.MonitorName,
+		AlertStatus: event.Payload.AlertStatus,
+		Success:     false,
+		Error:       "agent does not support recovery (not a ClaudeAgent)",
+		StartedAt:   time.Now(),
+		CompletedAt: time.Now(),
+	}, nil
 }
 
 // getAgent returns the appropriate agent for a role

@@ -172,6 +172,9 @@ spec:
             # Desktop notification servers (comma-separated)
             - name: NOTIFY_SERVER_URLS
               value: "http://192.168.50.68:9999"
+            # GoNotebook training material path (mounted via hostPath volume)
+            - name: GONOTEBOOK_PATH
+              value: "/app/gonotebook"
           resources:
             requests:
               memory: "512Mi"
@@ -187,6 +190,9 @@ spec:
               mountPath: /app/work
             - name: claude-home
               mountPath: /home/node/.claude
+            - name: gonotebook-volume
+              mountPath: /app/gonotebook
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /health
@@ -224,6 +230,11 @@ spec:
         # Writable Claude home directory
         - name: claude-home
           emptyDir: {}
+        # GoNotebook training material (Ultimate Go Notebook + Ardan Labs Go Training)
+        - name: gonotebook-volume
+          hostPath:
+            path: /home/n0ko/programming/go_projects/manuals/goNotebook
+            type: Directory
 ---
 apiVersion: v1
 kind: Service

@@ -15,6 +15,8 @@ const DD_LIB_DIR = '/app/dd_lib';
 const QDRANT_URL = process.env.QDRANT_URL || 'http://qdrant-service:6333';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://ollama-service:11434';
 const RCA_COLLECTION = 'rca_analyses';
+const GO_PRINCIPLES_COLLECTION = 'go_principles';
+const GONOTEBOOK_PATH = process.env.GONOTEBOOK_PATH || '/app/gonotebook';
 
 // Datadog API configuration
 // Construct API URL from DD_SITE (follows Datadog SDK convention)
@@ -23,6 +25,11 @@ const DD_APP_KEY = process.env.DD_APP_KEY;
 const DD_SITE = process.env.DD_SITE || 'datadoghq.com';
 const DD_API_URL = `https://api.${DD_SITE}`;
 const DD_APP_URL = `https://app.${DD_SITE}`;  // For notebook hyperlinks
+
+// Notebook lifecycle tracking: monitor_id -> { notebookId, monitorName, createdAt, status }
+// Tracks which notebook was created for which monitor so recovery events can update them.
+// Status transitions: Active -> Investigating -> Resolved
+const notebookRegistry = new Map();
 
 // Claude authentication configuration
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -39,6 +46,104 @@ const NOTIFY_SERVER_URLS = (() => {
     const singleUrl = process.env.NOTIFY_SERVER_URL || 'http://host.minikube.internal:9999';
     return [singleUrl];
 })();
+
+// Resolve the actual service name from a webhook payload.
+// Custom Datadog webhook templates populate APPLICATION_TEAM with the real service
+// name, while the standard `service` field often contains the monitor type
+// (e.g., "http-check", "process-check") instead of the actual service.
+// Priority: APPLICATION_TEAM > scope tag > service (if not a monitor type) > fallback
+function resolveServiceName(payload) {
+    // 1. APPLICATION_TEAM is the most reliable source from custom webhook templates
+    const appTeam = payload.APPLICATION_TEAM || payload.application_team;
+    if (appTeam && appTeam.trim()) {
+        return appTeam.trim();
+    }
+
+    // 2. Check scope/tags for application_team tag
+    const scope = payload.scope || '';
+    const scopeMatch = scope.match(/application_team:([^,\s]+)/);
+    if (scopeMatch) {
+        return scopeMatch[1];
+    }
+
+    const tags = Array.isArray(payload.tags) ? payload.tags : [];
+    for (const tag of tags) {
+        const tagMatch = tag.match(/^application_team:(.+)$/);
+        if (tagMatch) {
+            return tagMatch[1];
+        }
+    }
+
+    // 3. Use service only if it doesn't look like a monitor type
+    const monitorTypePatterns = /^(http-check|process-check|tcp-check|dns-check|ssl-check|grpc-check|service-check|custom-check|metric alert|query alert|composite|synthetics|event-v2 alert|watchdog)$/i;
+    const service = payload.service;
+    if (service && service.trim() && !monitorTypePatterns.test(service.trim())) {
+        return service.trim();
+    }
+
+    // 4. Fallback to raw service value
+    return service || 'N/A';
+}
+
+// Derive a meaningful severity value from alert_status/priority fields.
+// Ensures we never display 'N/A' for severity in notebooks.
+// Mapping follows industry-standard incident priority conventions:
+//   Alert/Triggered -> P2 (High)
+//   Warn           -> P3 (Medium)
+//   No Data        -> P4 (Low)
+//   OK/Recovered   -> P5 (Info)
+function deriveSeverity(payload) {
+    // Explicit severity or priority from the payload takes precedence
+    const explicit = payload.severity || payload.priority;
+    if (explicit && explicit !== 'N/A' && explicit.trim()) {
+        return explicit.trim();
+    }
+
+    // Map from URGENCY field (custom webhook templates)
+    const urgency = (payload.URGENCY || payload.urgency || '').toLowerCase().trim();
+    if (urgency === 'high' || urgency === 'critical') return 'P2 (High)';
+    if (urgency === 'medium' || urgency === 'normal') return 'P3 (Medium)';
+    if (urgency === 'low') return 'P4 (Low)';
+
+    // Map from alert_status
+    const alertStatus = (payload.alert_status || payload.alertStatus || '').toLowerCase().trim();
+    const alertState = (payload.ALERT_STATE || '').toLowerCase().trim();
+
+    if (alertStatus === 'alert' || alertState === 'triggered') return 'P2 (High)';
+    if (alertStatus === 'warn') return 'P3 (Medium)';
+    if (alertStatus === 'no data') return 'P4 (Low)';
+    if (alertStatus === 'ok' || alertStatus === 'recovered') return 'P5 (Info)';
+
+    // Final fallback: never return N/A
+    return 'P3 (Medium)';
+}
+
+// Derive the environment value from tags or payload fields.
+// Defaults to 'production' when no env tag is present rather than 'N/A'.
+function deriveEnv(payload) {
+    // Check explicit env field on payload
+    if (payload.env && payload.env !== 'N/A' && payload.env.trim()) {
+        return payload.env.trim();
+    }
+
+    // Check tags for env: tag
+    const tags = payload.tags || [];
+    const tagStr = Array.isArray(tags) ? tags.join(',') : (tags || '');
+    const tagMatch = tagStr.match(/env:([^,\s]+)/);
+    if (tagMatch) {
+        return tagMatch[1];
+    }
+
+    // Check scope for env: tag
+    const scope = payload.scope || '';
+    const scopeMatch = scope.match(/env:([^,\s]+)/);
+    if (scopeMatch) {
+        return scopeMatch[1];
+    }
+
+    // Default to 'production' rather than 'N/A'
+    return 'production';
+}
 
 // Send desktop notification via notify-server (same as webhook receive endpoint)
 // Sends to all configured servers
@@ -115,6 +220,117 @@ function getAuthMethod() {
     return null;
 }
 
+// Refresh the OAuth access token using the refresh token from credentials.json
+async function refreshOAuthToken() {
+    structuredLog('info', 'token_refresh_start', {});
+    const credsRaw = fs.readFileSync(CLAUDE_CREDS_PATH, 'utf8');
+    const creds = JSON.parse(credsRaw);
+    const oauth = creds.claudeAiOauth;
+    if (!oauth || !oauth.refreshToken) {
+        throw new Error('No refresh token available in credentials.json');
+    }
+    const tokenUrl = 'https://console.anthropic.com/v1/oauth/token';
+    const body = JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: oauth.refreshToken,
+    });
+    return new Promise((resolve, reject) => {
+        const urlObj = new URL(tokenUrl);
+        const options = {
+            hostname: urlObj.hostname,
+            port: 443,
+            path: urlObj.pathname,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body)
+            }
+        };
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                if (res.statusCode === 200) {
+                    try {
+                        const tokens = JSON.parse(data);
+                        creds.claudeAiOauth.accessToken = tokens.access_token;
+                        if (tokens.refresh_token) {
+                            creds.claudeAiOauth.refreshToken = tokens.refresh_token;
+                        }
+                        creds.claudeAiOauth.expiresAt = Date.now() + (tokens.expires_in * 1000);
+                        fs.writeFileSync(CLAUDE_CREDS_PATH, JSON.stringify(creds, null, 2));
+                        structuredLog('info', 'token_refresh_success', {
+                            expires_at: creds.claudeAiOauth.expiresAt
+                        });
+                        resolve(true);
+                    } catch (e) {
+                        reject(new Error(`Failed to parse token response: ${e.message}`));
+                    }
+                } else {
+                    reject(new Error(`Token refresh failed with status ${res.statusCode}: ${data}`));
+                }
+            });
+        });
+        req.on('error', (e) => reject(new Error(`Token refresh network error: ${e.message}`)));
+        req.write(body);
+        req.end();
+    });
+}
+
+// Check if the OAuth token is expiring within the next 5 minutes
+function isTokenExpiringSoon() {
+    try {
+        const creds = JSON.parse(fs.readFileSync(CLAUDE_CREDS_PATH, 'utf8'));
+        const expiresAt = creds.claudeAiOauth?.expiresAt;
+        if (!expiresAt) return false;
+        return Date.now() > (expiresAt - 5 * 60 * 1000);
+    } catch {
+        return false;
+    }
+}
+
+// Structured JSON logging for machine-parseable error telemetry
+function structuredLog(level, event, data = {}) {
+    const entry = {
+        timestamp: new Date().toISOString(),
+        level,
+        event,
+        service: 'claude-agent-sidecar',
+        ...data
+    };
+    const output = JSON.stringify(entry);
+    if (level === 'error') {
+        console.error(output);
+    } else {
+        console.log(output);
+    }
+}
+
+// Classify an error into a retry-actionable category
+function classifyError(err, stderr = '') {
+    const msg = (err.message || '').toLowerCase();
+    const errOutput = (stderr || '').toLowerCase();
+    const combined = msg + ' ' + errOutput;
+
+    if (combined.includes('401') || combined.includes('403') ||
+        combined.includes('unauthorized') || combined.includes('token') ||
+        combined.includes('auth') || combined.includes('credential') ||
+        combined.includes('expired') || combined.includes('invalid session')) {
+        return 'auth';
+    }
+    if (combined.includes('429') || combined.includes('rate limit') ||
+        combined.includes('too many requests') || combined.includes('retry-after')) {
+        return 'rate_limit';
+    }
+    if (combined.includes('econnrefused') || combined.includes('etimedout') ||
+        combined.includes('epipe') || combined.includes('enotfound') ||
+        combined.includes('econnreset') || combined.includes('network') ||
+        combined.includes('socket hang up') || combined.includes('dns')) {
+        return 'network';
+    }
+    return 'unknown';
+}
+
 // Parse JSON body from request
 function parseBody(req) {
     return new Promise((resolve, reject) => {
@@ -137,26 +353,29 @@ function sendJson(res, statusCode, data) {
     res.end(JSON.stringify(data));
 }
 
-// Make HTTP request helper
-function httpRequest(url, method, data = null) {
+// Make HTTP request helper - supports both HTTP and HTTPS
+function httpRequest(url, method, data = null, extraHeaders = {}) {
     return new Promise((resolve, reject) => {
         const urlObj = new URL(url);
+        const isHttps = urlObj.protocol === 'https:';
+        const transport = isHttps ? https : http;
+        const defaultPort = isHttps ? 443 : 80;
         const options = {
             hostname: urlObj.hostname,
-            port: urlObj.port,
+            port: urlObj.port || defaultPort,
             path: urlObj.pathname + urlObj.search,
             method: method,
-            headers: { 'Content-Type': 'application/json' }
+            headers: { 'Content-Type': 'application/json', ...extraHeaders }
         };
 
-        const req = http.request(options, (res) => {
+        const req = transport.request(options, (res) => {
             let body = '';
             res.on('data', chunk => body += chunk);
             res.on('end', () => {
                 try {
-                    resolve({ status: res.statusCode, data: body ? JSON.parse(body) : null });
+                    resolve({ status: res.statusCode, data: body ? JSON.parse(body) : null, headers: res.headers });
                 } catch (e) {
-                    resolve({ status: res.statusCode, data: body });
+                    resolve({ status: res.statusCode, data: body, headers: res.headers });
                 }
             });
         });
@@ -178,11 +397,17 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = [], datado
     const monitorName = payload.monitor_name || payload.monitorName;
     const alertStatus = payload.alert_status || payload.alertStatus;
     const hostname = payload.hostname || 'N/A';
-    const service = payload.service || 'N/A';
+    const service = resolveServiceName(payload);
     const scope = payload.scope || 'N/A';
     const tags = payload.tags || [];
     const applicationTeam = payload.APPLICATION_TEAM || payload.application_team || 'N/A';
     const timestamp = new Date().toISOString();
+
+    // Extract env/region/severity from tags or payload fields
+    const tagStr = Array.isArray(tags) ? tags.join(',') : (tags || '');
+    const env = deriveEnv(payload);
+    const region = payload.region || (tagStr.match(/region:([^,\s]+)/)?.[1]) || 'N/A';
+    const severity = deriveSeverity(payload);
 
     // Build default URLs if not provided
     const ddBaseUrl = DD_APP_URL;
@@ -209,43 +434,55 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = [], datado
     // Build similar RCAs markdown section
     let similarRCAsMarkdown = '';
     if (similarRCAs.length > 0) {
-        similarRCAsMarkdown = `\n\n## Similar Past Incidents\n\n`;
+        similarRCAsMarkdown = `# 🧠 Similar Past Incidents\n\n` +
+            `> Powered by vector database similarity search\n\n` +
+            `---\n\n`;
         similarRCAs.forEach((rca, i) => {
             const rcaMonitorId = rca.payload?.monitor_id;
             const rcaMonitorName = rca.payload?.monitor_name || 'Unknown';
             const rcaMonitorUrl = rcaMonitorId ? `${ddBaseUrl}/monitors/${rcaMonitorId}` : null;
-            similarRCAsMarkdown += `### ${i + 1}. ${rcaMonitorUrl ? `[${rcaMonitorName}](${rcaMonitorUrl})` : rcaMonitorName} (${(rca.score * 100).toFixed(0)}% similar)\n`;
-            similarRCAsMarkdown += `${rca.payload?.analysis?.substring(0, 300) || 'No analysis available'}...\n\n`;
+            const rcaDate = rca.payload?.timestamp ? new Date(rca.payload.timestamp).toISOString().split('T')[0] : 'N/A';
+            const rcaAnalysisSnippet = rca.payload?.analysis?.substring(0, 200) || 'No analysis available';
+            const score = Math.round(rca.score * 100);
+            const scoreEmoji = score >= 90 ? '🟢' : score >= 75 ? '🟡' : '🟠';
+
+            similarRCAsMarkdown += `## ${String.fromCharCode(0x2460 + i)} ${scoreEmoji} ${score}% Match — Similar incident pattern\n\n`;
+            similarRCAsMarkdown += `### ${rcaMonitorUrl ? `[🔗 ${rcaMonitorName}](${rcaMonitorUrl})` : rcaMonitorName}\n\n`;
+            similarRCAsMarkdown += `| | Detail |\n`;
+            similarRCAsMarkdown += `|---|--------|\n`;
+            similarRCAsMarkdown += `| 📆 **Date** | ${rcaDate} |\n`;
+            similarRCAsMarkdown += `| 🔍 **Root Cause** | ${rcaAnalysisSnippet}... |\n`;
+            similarRCAsMarkdown += `| ✅ **Resolution** | ${rca.payload?.resolution || 'N/A'} |\n\n`;
+            similarRCAsMarkdown += `> ⚠️ **Relevance:** Pattern matches indicate similar failure mode\n\n`;
         });
     }
 
     // Build quick links section
-    let quickLinksMarkdown = '### 🔗 Quick Links\n\n';
-    if (urls.monitor) quickLinksMarkdown += `- [📊 View Monitor](${urls.monitor})\n`;
-    if (urls.logsHost || urls.logsService) quickLinksMarkdown += `- [📋 View Logs](${urls.logsHost || urls.logsService || urls.logsErrors})\n`;
-    if (urls.apmService) quickLinksMarkdown += `- [🔍 APM Service](${urls.apmService})\n`;
-    if (urls.apmTraces) quickLinksMarkdown += `- [🔗 APM Traces](${urls.apmTraces})\n`;
-    if (urls.apmErrors) quickLinksMarkdown += `- [⚠️ Error Traces](${urls.apmErrors})\n`;
-    if (urls.host) quickLinksMarkdown += `- [🖥️ Host Infrastructure](${urls.host})\n`;
-    if (urls.hostDashboard) quickLinksMarkdown += `- [📈 Host Dashboard](${urls.hostDashboard})\n`;
-    if (urls.metrics) quickLinksMarkdown += `- [📉 Metrics Explorer](${urls.metrics})\n`;
-    if (urls.events) quickLinksMarkdown += `- [📅 Events](${urls.events})\n`;
-    if (urls.dbm) quickLinksMarkdown += `- [🗄️ Database Monitoring](${urls.dbm})\n`;
-    if (urls.dbmQueries) quickLinksMarkdown += `- [💾 DB Queries](${urls.dbmQueries})\n`;
+    let quickLinksMarkdown = '### 🚀 Quick Links\n\n';
+    quickLinksMarkdown += '| Link | Description |\n';
+    quickLinksMarkdown += '|------|-------------|\n';
+    if (urls.monitor) quickLinksMarkdown += `| 🎯 [View Monitor](${urls.monitor}) | Monitor configuration and alert history |\n`;
+    if (urls.events) quickLinksMarkdown += `| 📅 [Events](${urls.events}) | Deployment events and config changes in the alert window |\n`;
+    if (urls.dbmQueries) quickLinksMarkdown += `| 🗃️ [DB Queries](${urls.dbmQueries}) | Database query performance and slow queries |\n`;
+    if (urls.apmErrors) quickLinksMarkdown += `| 🔎 [APM Traces](${urls.apmErrors}) | Distributed traces with error spans |\n`;
+    if (urls.logsHost || urls.logsService) quickLinksMarkdown += `| 📜 [Logs](${urls.logsHost || urls.logsService || urls.logsErrors}) | Error logs from the affected service |\n`;
 
     // Build header with hyperlinks in table
-    const headerMarkdown = `# Incident Report: ${monitorName}\n\n` +
-        `**Generated:** ${timestamp}\n\n` +
+    const tagsFormatted = tags.map(t => `\`${t}\``).join(' · ') || 'N/A';
+    const headerMarkdown = `# 🚨 Incident Report: ${monitorName}\n` +
+        `### \`service:${service}\` | \`env:${env}\` | \`region:${region}\`\n\n` +
+        `> ⏰ **Generated:** ${timestamp}  |  ⚠️ **Status: ACTIVE**  |  📊 **Severity: ${severity}**\n\n` +
         `---\n\n` +
-        `| Field | Value |\n` +
-        `|-------|-------|\n` +
-        `| Monitor ID | ${urls.monitor ? `[${monitorId}](${urls.monitor})` : monitorId} |\n` +
-        `| Alert Status | **${alertStatus}** |\n` +
-        `| Hostname | ${urls.host ? `[${hostname}](${urls.host})` : hostname} |\n` +
-        `| Service | ${urls.apmService ? `[${service}](${urls.apmService})` : service} |\n` +
-        `| Scope | ${scope} |\n` +
-        `| Application Team | ${applicationTeam} |\n` +
-        `| Tags | ${tags.join(', ') || 'N/A'} |\n\n` +
+        `| | Field | Value |\n` +
+        `|---|-------|-------|\n` +
+        `| 🎯 | **Monitor** | ${urls.monitor ? `[🔗 #${monitorId}](${urls.monitor})` : `#${monitorId}`} |\n` +
+        `| 🟥 | **Alert Status** | **⚠️ ${alertStatus}** |\n` +
+        `| 🖥️ | **Hostname** | \`${hostname}\` |\n` +
+        `| 📦 | **Service** | \`${service}\` |\n` +
+        `| 🔍 | **Scope** | \`${scope}\` |\n` +
+        `| 👥 | **Application Team** | ${applicationTeam} |\n` +
+        `| 🏷️ | **Tags** | ${tagsFormatted} |\n\n` +
+        `---\n\n` +
         quickLinksMarkdown;
 
     // Truncate notebook name to fit within 80 char limit
@@ -271,13 +508,13 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = [], datado
                             }
                         }
                     },
-                    // Analysis cell
+                    // Analysis cell (Claude generates the full markdown with title)
                     {
                         type: "notebook_cells",
                         attributes: {
                             definition: {
                                 type: "markdown",
-                                text: `## Root Cause Analysis\n\n${analysis}`
+                                text: analysis
                             }
                         }
                     },
@@ -350,11 +587,18 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = [], datado
                             definition: {
                                 type: "markdown",
                                 text: `---\n\n` +
-                                    `*This incident report was automatically generated by Rayne Claude Agent.*\n\n` +
-                                    `**Actions:**\n` +
-                                    `${urls.monitor ? `- [View Monitor](${urls.monitor})\n` : ''}` +
-                                    `${urls.monitor ? `- [Edit Monitor](${urls.monitor}/edit)\n` : ''}` +
-                                    `${urls.events ? `- [View Related Events](${urls.events})\n` : ''}`
+                                    `> 🤖 *This incident report was automatically generated by the webhook agent at ${timestamp}*\n\n` +
+                                    `### ↩️ Actions\n\n` +
+                                    `| Action | Link |\n` +
+                                    `|--------|------|\n` +
+                                    `${urls.monitor ? `| 🎯 View Monitor | [🔗 Monitor #${monitorId}](${urls.monitor}) |\n` : ''}` +
+                                    `${urls.monitor ? `| ✏️ Edit Monitor | [🔗 Edit thresholds & config](${urls.monitor}/edit) |\n` : ''}` +
+                                    `${urls.events ? `| 📅 Related Events | [🔗 Event Explorer](${urls.events}) |\n` : ''}` +
+                                    `\n### 🧬 Vector DB Metadata\n\n` +
+                                    `| Key | Value |\n` +
+                                    `|-----|-------|\n` +
+                                    `| matches | ${similarRCAs.length} |\n` +
+                                    `| threshold | 70% |\n`
                             }
                         }
                     }
@@ -405,6 +649,19 @@ async function createDatadogNotebook(payload, analysis, similarRCAs = [], datado
             const notebookId = response.data?.data?.id;
             const notebookUrl = `${DD_APP_URL}/notebook/${notebookId}`;
             console.log(`[Notebook] Created successfully: ${notebookUrl}`);
+
+            // Register notebook in lifecycle tracker
+            if (monitorId) {
+                notebookRegistry.set(String(monitorId), {
+                    notebookId,
+                    monitorName,
+                    createdAt: timestamp,
+                    status: 'Active',
+                    type: 'incident'
+                });
+                console.log(`[Notebook] Registered notebook ${notebookId} for monitor ${monitorId} (Active)`);
+            }
+
             return { id: notebookId, url: notebookUrl };
         } else {
             console.error(`[Notebook] Failed to create: ${response.status}`, response.data);
@@ -427,10 +684,16 @@ async function createWatchdogNotebook(payload, analysis, triggerTime, similarRCA
     const monitorName = payload.monitor_name || payload.monitorName;
     const alertStatus = payload.alert_status || payload.alertStatus;
     const hostname = payload.hostname || 'N/A';
-    const service = payload.service || 'N/A';
+    const service = resolveServiceName(payload);
     const tags = payload.tags || [];
     const applicationTeam = payload.APPLICATION_TEAM || payload.application_team || 'N/A';
     const timestamp = new Date().toISOString();
+
+    // Extract env/region/severity from tags or payload fields
+    const tagStr = Array.isArray(tags) ? tags.join(',') : (tags || '');
+    const env = deriveEnv(payload);
+    const region = payload.region || (tagStr.match(/region:([^,\s]+)/)?.[1]) || 'N/A';
+    const severity = deriveSeverity(payload);
 
     const ddBaseUrl = DD_APP_URL;
     const nowTs = Math.floor(Date.now() / 1000) * 1000;
@@ -454,41 +717,56 @@ async function createWatchdogNotebook(payload, analysis, triggerTime, similarRCA
     };
 
     // Build quick links
-    let quickLinksMarkdown = '### 🔗 Quick Links\n\n';
-    if (urls.watchdog) quickLinksMarkdown += `- [🐕 Watchdog Dashboard](${urls.watchdog})\n`;
-    if (urls.monitor) quickLinksMarkdown += `- [📊 View Monitor](${urls.monitor})\n`;
-    if (urls.logsHost || urls.logsService) quickLinksMarkdown += `- [📋 View Logs](${urls.logsHost || urls.logsService || urls.logsErrors})\n`;
-    if (urls.host) quickLinksMarkdown += `- [🖥️ Host Infrastructure](${urls.host})\n`;
-    if (urls.hostDashboard) quickLinksMarkdown += `- [📈 Host Dashboard](${urls.hostDashboard})\n`;
-    if (urls.metrics) quickLinksMarkdown += `- [📉 Metrics Explorer](${urls.metrics})\n`;
-    if (urls.apmService) quickLinksMarkdown += `- [🔍 APM Service](${urls.apmService})\n`;
-    if (urls.events) quickLinksMarkdown += `- [📅 Watchdog Events](${urls.events})\n`;
+    let quickLinksMarkdown = '### 🚀 Quick Links\n\n';
+    quickLinksMarkdown += '| Link | Description |\n';
+    quickLinksMarkdown += '|------|-------------|\n';
+    if (urls.watchdog) quickLinksMarkdown += `| 🐕 [Watchdog Dashboard](${urls.watchdog}) | Anomaly detection dashboard |\n`;
+    if (urls.monitor) quickLinksMarkdown += `| 🎯 [View Monitor](${urls.monitor}) | Monitor configuration and alert history |\n`;
+    if (urls.events) quickLinksMarkdown += `| 📅 [Events](${urls.events}) | Watchdog events in alert window |\n`;
+    if (urls.apmService) quickLinksMarkdown += `| 🔎 [APM Service](${urls.apmService}) | Service performance and traces |\n`;
+    if (urls.logsHost || urls.logsService) quickLinksMarkdown += `| 📜 [Logs](${urls.logsHost || urls.logsService || urls.logsErrors}) | Error logs from the affected service |\n`;
 
     // Header
-    const headerMarkdown = `# Watchdog Monitor Triggered\n\n` +
-        `**A Datadog Watchdog anomaly detection monitor has been triggered.**\n\n` +
-        `**Generated:** ${timestamp}\n\n` +
+    const tagsFormatted = tags.map(t => `\`${t}\``).join(' · ') || 'N/A';
+    const headerMarkdown = `# 🐕 Watchdog Anomaly Alert: ${monitorName}\n` +
+        `### \`service:${service}\` | \`env:${env}\` | \`region:${region}\`\n\n` +
+        `> ⏰ **Generated:** ${timestamp}  |  ⚠️ **Status: ACTIVE**  |  📊 **Severity: ${severity}**\n\n` +
         `---\n\n` +
-        `| Field | Value |\n` +
-        `|-------|-------|\n` +
-        `| Monitor Name | ${urls.monitor ? `[${monitorName}](${urls.monitor})` : monitorName} |\n` +
-        `| Monitor ID | ${monitorId} |\n` +
-        `| Alert Status | **${alertStatus}** |\n` +
-        `| Triggered At | ${triggerTime} |\n` +
-        `| Hostname | ${urls.host ? `[${hostname}](${urls.host})` : hostname} |\n` +
-        `| Service | ${urls.apmService ? `[${service}](${urls.apmService})` : service} |\n` +
-        `| Application Team | ${applicationTeam} |\n` +
-        `| Tags | ${tags.join(', ') || 'N/A'} |\n\n` +
+        `| | Field | Value |\n` +
+        `|---|-------|-------|\n` +
+        `| 🎯 | **Monitor** | ${urls.monitor ? `[🔗 #${monitorId}](${urls.monitor})` : `#${monitorId}`} |\n` +
+        `| 🟥 | **Alert Status** | **⚠️ ${alertStatus}** |\n` +
+        `| ⏱️ | **Triggered At** | ${triggerTime} |\n` +
+        `| 🖥️ | **Hostname** | \`${hostname}\` |\n` +
+        `| 📦 | **Service** | \`${service}\` |\n` +
+        `| 👥 | **Application Team** | ${applicationTeam} |\n` +
+        `| 🏷️ | **Tags** | ${tagsFormatted} |\n\n` +
+        `---\n\n` +
         quickLinksMarkdown;
 
     // Similar incidents section
     let similarRCAsMarkdown = '';
     if (similarRCAs.length > 0) {
-        similarRCAsMarkdown = `\n\n## Similar Past Incidents\n\n`;
+        similarRCAsMarkdown = `# 🧠 Similar Past Incidents\n\n` +
+            `> Powered by vector database similarity search\n\n` +
+            `---\n\n`;
         similarRCAs.forEach((rca, i) => {
+            const rcaMonitorId = rca.payload?.monitor_id;
             const rcaMonitorName = rca.payload?.monitor_name || 'Unknown';
-            similarRCAsMarkdown += `### ${i + 1}. ${rcaMonitorName} (${(rca.score * 100).toFixed(0)}% similar)\n`;
-            similarRCAsMarkdown += `${rca.payload?.analysis?.substring(0, 300) || 'No analysis available'}...\n\n`;
+            const rcaMonitorUrl = rcaMonitorId ? `${ddBaseUrl}/monitors/${rcaMonitorId}` : null;
+            const rcaDate = rca.payload?.timestamp ? new Date(rca.payload.timestamp).toISOString().split('T')[0] : 'N/A';
+            const rcaAnalysisSnippet = rca.payload?.analysis?.substring(0, 200) || 'No analysis available';
+            const score = Math.round(rca.score * 100);
+            const scoreEmoji = score >= 90 ? '🟢' : score >= 75 ? '🟡' : '🟠';
+
+            similarRCAsMarkdown += `## ${String.fromCharCode(0x2460 + i)} ${scoreEmoji} ${score}% Match — Similar anomaly pattern\n\n`;
+            similarRCAsMarkdown += `### ${rcaMonitorUrl ? `[🔗 ${rcaMonitorName}](${rcaMonitorUrl})` : rcaMonitorName}\n\n`;
+            similarRCAsMarkdown += `| | Detail |\n`;
+            similarRCAsMarkdown += `|---|--------|\n`;
+            similarRCAsMarkdown += `| 📆 **Date** | ${rcaDate} |\n`;
+            similarRCAsMarkdown += `| 🔍 **Root Cause** | ${rcaAnalysisSnippet}... |\n`;
+            similarRCAsMarkdown += `| ✅ **Resolution** | ${rca.payload?.resolution || 'N/A'} |\n\n`;
+            similarRCAsMarkdown += `> ⚠️ **Relevance:** Pattern matches indicate similar failure mode\n\n`;
         });
     }
 
@@ -518,7 +796,7 @@ async function createWatchdogNotebook(payload, analysis, triggerTime, similarRCA
                         attributes: {
                             definition: {
                                 type: "markdown",
-                                text: `## Watchdog Anomaly Analysis\n\n${analysis}`
+                                text: analysis
                             }
                         }
                     },
@@ -585,12 +863,19 @@ async function createWatchdogNotebook(payload, analysis, triggerTime, similarRCA
                             definition: {
                                 type: "markdown",
                                 text: `---\n\n` +
-                                    `*This watchdog alert report was automatically generated by Rayne Claude Agent.*\n\n` +
-                                    `**Actions:**\n` +
-                                    `${urls.watchdog ? `- [🐕 View Watchdog Dashboard](${urls.watchdog})\n` : ''}` +
-                                    `${urls.monitor ? `- [📊 View Monitor](${urls.monitor})\n` : ''}` +
-                                    `${urls.monitor ? `- [✏️ Edit Monitor](${urls.monitor}/edit)\n` : ''}` +
-                                    `${urls.events ? `- [📅 View Watchdog Events](${urls.events})\n` : ''}`
+                                    `> 🤖 *This watchdog alert report was automatically generated by the webhook agent at ${timestamp}*\n\n` +
+                                    `### ↩️ Actions\n\n` +
+                                    `| Action | Link |\n` +
+                                    `|--------|------|\n` +
+                                    `${urls.watchdog ? `| 🐕 Watchdog Dashboard | [🔗 View Anomalies](${urls.watchdog}) |\n` : ''}` +
+                                    `${urls.monitor ? `| 🎯 View Monitor | [🔗 Monitor #${monitorId}](${urls.monitor}) |\n` : ''}` +
+                                    `${urls.monitor ? `| ✏️ Edit Monitor | [🔗 Edit thresholds & config](${urls.monitor}/edit) |\n` : ''}` +
+                                    `${urls.events ? `| 📅 Related Events | [🔗 Event Explorer](${urls.events}) |\n` : ''}` +
+                                    `\n### 🧬 Vector DB Metadata\n\n` +
+                                    `| Key | Value |\n` +
+                                    `|-----|-------|\n` +
+                                    `| matches | ${similarRCAs.length} |\n` +
+                                    `| threshold | 70% |\n`
                             }
                         }
                     }
@@ -639,6 +924,19 @@ async function createWatchdogNotebook(payload, analysis, triggerTime, similarRCA
             const notebookId = response.data?.data?.id;
             const notebookUrl = `${DD_APP_URL}/notebook/${notebookId}`;
             console.log(`[Watchdog Notebook] Created: ${notebookUrl}`);
+
+            // Register notebook in lifecycle tracker
+            if (monitorId) {
+                notebookRegistry.set(String(monitorId), {
+                    notebookId,
+                    monitorName,
+                    createdAt: timestamp,
+                    status: 'Active',
+                    type: 'watchdog'
+                });
+                console.log(`[Watchdog Notebook] Registered notebook ${notebookId} for monitor ${monitorId} (Active)`);
+            }
+
             return { id: notebookId, url: notebookUrl };
         } else {
             console.error(`[Watchdog Notebook] Failed: ${response.status}`, response.data);
@@ -648,6 +946,209 @@ async function createWatchdogNotebook(payload, analysis, triggerTime, similarRCA
         console.error(`[Watchdog Notebook] Error: ${err.message}`);
         return null;
     }
+}
+
+// Fetch an existing Datadog Notebook by ID
+async function getDatadogNotebook(notebookId) {
+    if (!DD_API_KEY || !DD_APP_KEY) {
+        return null;
+    }
+
+    try {
+        const urlObj = new URL(`${DD_API_URL}/api/v1/notebooks/${notebookId}`);
+        const response = await new Promise((resolve, reject) => {
+            const options = {
+                hostname: urlObj.hostname,
+                port: urlObj.port || 443,
+                path: urlObj.pathname,
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'DD-API-KEY': DD_API_KEY,
+                    'DD-APPLICATION-KEY': DD_APP_KEY
+                }
+            };
+
+            const req = https.request(options, (res) => {
+                let body = '';
+                res.on('data', chunk => body += chunk);
+                res.on('end', () => {
+                    try {
+                        resolve({ status: res.statusCode, data: JSON.parse(body) });
+                    } catch (e) {
+                        resolve({ status: res.statusCode, data: body });
+                    }
+                });
+            });
+            req.on('error', reject);
+            req.end();
+        });
+
+        if (response.status === 200) {
+            return response.data;
+        }
+        console.error(`[Notebook] Failed to fetch notebook ${notebookId}: ${response.status}`);
+        return null;
+    } catch (err) {
+        console.error(`[Notebook] Error fetching notebook ${notebookId}: ${err.message}`);
+        return null;
+    }
+}
+
+// Update an existing Datadog Notebook via PUT API
+// The Datadog Notebooks API uses PUT (not PATCH) for updates
+async function updateDatadogNotebook(notebookId, notebookData) {
+    if (!DD_API_KEY || !DD_APP_KEY) {
+        return null;
+    }
+
+    try {
+        const response = await new Promise((resolve, reject) => {
+            const urlObj = new URL(`${DD_API_URL}/api/v1/notebooks/${notebookId}`);
+            const options = {
+                hostname: urlObj.hostname,
+                port: urlObj.port || 443,
+                path: urlObj.pathname,
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'DD-API-KEY': DD_API_KEY,
+                    'DD-APPLICATION-KEY': DD_APP_KEY
+                }
+            };
+
+            const req = https.request(options, (res) => {
+                let body = '';
+                res.on('data', chunk => body += chunk);
+                res.on('end', () => {
+                    try {
+                        resolve({ status: res.statusCode, data: JSON.parse(body) });
+                    } catch (e) {
+                        resolve({ status: res.statusCode, data: body });
+                    }
+                });
+            });
+
+            req.on('error', reject);
+            req.write(JSON.stringify(notebookData));
+            req.end();
+        });
+
+        if (response.status === 200) {
+            console.log(`[Notebook] Updated notebook ${notebookId} successfully`);
+            return response.data;
+        }
+        console.error(`[Notebook] Failed to update notebook ${notebookId}: ${response.status}`, response.data);
+        return null;
+    } catch (err) {
+        console.error(`[Notebook] Error updating notebook ${notebookId}: ${err.message}`);
+        return null;
+    }
+}
+
+// Resolve a notebook for recovery: updates its title and header to reflect RESOLVED status
+// Follows incident disposition lifecycle: Active -> Investigating -> Resolved
+async function resolveNotebook(notebookId, monitorId, monitorName, recoveryTimestamp) {
+    console.log(`[Recovery] Resolving notebook ${notebookId} for monitor ${monitorId}`);
+
+    // Fetch the existing notebook
+    const existing = await getDatadogNotebook(notebookId);
+    if (!existing) {
+        console.error(`[Recovery] Could not fetch notebook ${notebookId}`);
+        return null;
+    }
+
+    const notebook = existing.data;
+    const attrs = notebook?.attributes;
+    if (!attrs) {
+        console.error(`[Recovery] Notebook ${notebookId} has no attributes`);
+        return null;
+    }
+
+    // Update the notebook title: replace [Incident Report] or [Watchdog Alert] with [RESOLVED]
+    const oldName = attrs.name || '';
+    let newName = oldName;
+    if (oldName.includes('[Incident Report]')) {
+        newName = oldName.replace('[Incident Report]', '[RESOLVED]');
+    } else if (oldName.includes('[Watchdog Alert]')) {
+        newName = oldName.replace('[Watchdog Alert]', '[RESOLVED]');
+    } else if (!oldName.includes('[RESOLVED]')) {
+        newName = `[RESOLVED] ${oldName}`;
+    }
+
+    // Update the header cell: replace "Status: ACTIVE" with "Status: RESOLVED"
+    const cells = attrs.cells || [];
+    const updatedCells = cells.map(cell => {
+        const text = cell?.attributes?.definition?.text || '';
+        if (text.includes('Status: ACTIVE') || text.includes('Status:**')) {
+            const updatedText = text
+                .replace(/Status: ACTIVE/g, 'Status: RESOLVED')
+                .replace(/⚠️ \*\*Status: ACTIVE\*\*/g, '✅ **Status: RESOLVED**');
+            return {
+                ...cell,
+                attributes: {
+                    ...cell.attributes,
+                    definition: {
+                        ...cell.attributes.definition,
+                        text: updatedText
+                    }
+                }
+            };
+        }
+        return cell;
+    });
+
+    // Add a resolution cell at the end (before the footer)
+    const resolutionCell = {
+        type: "notebook_cells",
+        attributes: {
+            definition: {
+                type: "markdown",
+                text: `# ✅ Incident Resolved\n\n` +
+                    `> **Recovery detected at:** ${recoveryTimestamp}\n\n` +
+                    `| Field | Value |\n` +
+                    `|-------|-------|\n` +
+                    `| Monitor | ${monitorName} (ID: ${monitorId}) |\n` +
+                    `| Resolution Time | ${recoveryTimestamp} |\n` +
+                    `| Status | **RESOLVED** |\n\n` +
+                    `---\n\n` +
+                    `> 🤖 *This resolution was automatically recorded by the webhook agent recovery pipeline*\n`
+            }
+        }
+    };
+
+    // Insert resolution cell before the last cell (footer)
+    if (updatedCells.length > 1) {
+        updatedCells.splice(updatedCells.length - 1, 0, resolutionCell);
+    } else {
+        updatedCells.push(resolutionCell);
+    }
+
+    // Build the update payload
+    const updateData = {
+        data: {
+            type: "notebooks",
+            attributes: {
+                name: newName,
+                cells: updatedCells,
+                time: attrs.time || { live_span: "1h" },
+                status: attrs.status || "published"
+            }
+        }
+    };
+
+    const result = await updateDatadogNotebook(notebookId, updateData);
+    if (result) {
+        // Update the registry
+        const entry = notebookRegistry.get(String(monitorId));
+        if (entry) {
+            entry.status = 'Resolved';
+            entry.resolvedAt = recoveryTimestamp;
+        }
+        console.log(`[Recovery] Notebook ${notebookId} resolved successfully`);
+    }
+
+    return result;
 }
 
 // Generate embeddings using Ollama with Gemma
@@ -741,6 +1242,405 @@ async function searchSimilarRCAs(embedding, limit = 5) {
     }
 }
 
+// ============================================================================
+// GoNotebook RAG Integration
+// Chunks, embeds, and indexes Ultimate Go Notebook training material for
+// retrieval-augmented generation in the GitHub issue processing pipeline.
+// ============================================================================
+
+// Initialize go_principles Qdrant collection if not exists
+// Returns { exists: boolean, pointCount: number }
+async function initGoPrinciplesCollection() {
+    try {
+        const check = await httpRequest(`${QDRANT_URL}/collections/${GO_PRINCIPLES_COLLECTION}`, 'GET');
+        if (check.status === 200) {
+            // Collection exists, get point count
+            const countResp = await httpRequest(`${QDRANT_URL}/collections/${GO_PRINCIPLES_COLLECTION}/points/count`, 'POST', {});
+            const pointCount = countResp.data?.result?.count || 0;
+            console.log(`[GoNotebook] Collection exists with ${pointCount} points`);
+            return { exists: true, pointCount };
+        }
+
+        // Create collection with same config as RCA (2048-dim gemma:2b embeddings)
+        const create = await httpRequest(`${QDRANT_URL}/collections/${GO_PRINCIPLES_COLLECTION}`, 'PUT', {
+            vectors: {
+                size: 2048,
+                distance: 'Cosine'
+            }
+        });
+        console.log(`[GoNotebook] Created collection: ${create.status}`);
+        return { exists: create.status === 200, pointCount: 0 };
+    } catch (err) {
+        console.error(`[GoNotebook] Init error: ${err.message}`);
+        return { exists: false, pointCount: 0 };
+    }
+}
+
+// Chunk a markdown file by heading boundaries
+// Splits by ## headings, further splits large sections by ### sub-headings
+function chunkMarkdownFile(filePath, category, topic) {
+    try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        const chunks = [];
+        const relPath = filePath.replace(GONOTEBOOK_PATH + '/', '');
+
+        // Split by ## headings
+        const sections = content.split(/^(?=## )/m);
+
+        for (const section of sections) {
+            if (!section.trim()) continue;
+
+            // Extract heading from section
+            const headingMatch = section.match(/^(#{2,3})\s+(.+)/);
+            const sectionHeading = headingMatch ? headingMatch[2].trim() : 'Introduction';
+
+            if (section.length > 3000) {
+                // Further split large sections by ### sub-headings
+                const subSections = section.split(/^(?=### )/m);
+                for (const sub of subSections) {
+                    if (!sub.trim()) continue;
+                    const subHeadingMatch = sub.match(/^(#{2,3})\s+(.+)/);
+                    const subHeading = subHeadingMatch ? subHeadingMatch[2].trim() : sectionHeading;
+                    chunks.push({
+                        text: sub.trim(),
+                        metadata: {
+                            source: 'goNotebook',
+                            category,
+                            topic,
+                            file_path: relPath,
+                            section_heading: subHeading
+                        }
+                    });
+                }
+            } else {
+                chunks.push({
+                    text: section.trim(),
+                    metadata: {
+                        source: 'goNotebook',
+                        category,
+                        topic,
+                        file_path: relPath,
+                        section_heading: sectionHeading
+                    }
+                });
+            }
+        }
+
+        return chunks;
+    } catch (err) {
+        console.error(`[GoNotebook] Error chunking markdown ${filePath}: ${err.message}`);
+        return [];
+    }
+}
+
+// Chunk a Go source file (entire file as one chunk)
+function chunkGoFile(filePath, category, topic) {
+    try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        if (!content.trim()) return [];
+
+        const relPath = filePath.replace(GONOTEBOOK_PATH + '/', '');
+        // Extract directory name as sub-topic context
+        const dirName = path.basename(path.dirname(filePath));
+        const contextLine = `// Go training example: ${topic} - ${dirName}\n`;
+
+        return [{
+            text: contextLine + content,
+            metadata: {
+                source: 'goNotebook',
+                category,
+                topic,
+                file_path: relPath,
+                section_heading: dirName
+            }
+        }];
+    } catch (err) {
+        console.error(`[GoNotebook] Error chunking Go file ${filePath}: ${err.message}`);
+        return [];
+    }
+}
+
+// Recursively walk a directory tree
+function walkDir(dir) {
+    let results = [];
+    try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                // Skip irrelevant directories
+                if (['.git', 'vendor', 'grpcExample', '.DS_Store'].includes(entry.name)) continue;
+                results = results.concat(walkDir(fullPath));
+            } else if (entry.isFile()) {
+                // Skip non-content files
+                if (['.gitignore', '.DS_Store'].includes(entry.name)) continue;
+                if (entry.name.endsWith('.pem') || entry.name.endsWith('.crt') || entry.name.endsWith('.key')) continue;
+                if (entry.name.endsWith('.md') || entry.name.endsWith('.go')) {
+                    results.push(fullPath);
+                }
+            }
+        }
+    } catch (err) {
+        console.error(`[GoNotebook] Error walking ${dir}: ${err.message}`);
+    }
+    return results;
+}
+
+// Categorize a file based on its path within the goNotebook directory
+function categorizeFile(filePath) {
+    const relPath = filePath.replace(GONOTEBOOK_PATH + '/', '');
+
+    // gotraining/topics/go/README.md - the design philosophy bible
+    if (relPath === 'gotraining/topics/go/README.md') {
+        return { category: 'philosophy', topic: 'design_philosophy' };
+    }
+
+    // gotraining/topics/go/<category>/...
+    const gotrainingMatch = relPath.match(/^gotraining\/topics\/go\/(\w+)\//);
+    if (gotrainingMatch) {
+        const category = gotrainingMatch[1];
+        // Extract topic from next directory level
+        const topicMatch = relPath.match(/^gotraining\/topics\/go\/\w+\/(\w+)/);
+        const topic = topicMatch ? topicMatch[1] : category;
+        return { category, topic };
+    }
+
+    // Root README
+    if (relPath === 'README.md') {
+        return { category: 'overview', topic: 'overview' };
+    }
+
+    // ultimate_go_notebook/chap{NN}/...
+    const chapMatch = relPath.match(/^ultimate_go_notebook\/chap(\d+)/);
+    if (chapMatch) {
+        const chap = parseInt(chapMatch[1]);
+        const topicMatch = relPath.match(/^ultimate_go_notebook\/chap\d+\/([^/]+)/);
+        const dirTopic = topicMatch ? topicMatch[1].replace(/^\d+[-_]?/, '') : 'general';
+
+        const chapMap = {
+            2: { category: 'language', topic: 'syntax' },
+            3: { category: 'language', topic: 'data_semantics' },
+            4: { category: 'language', topic: 'decoupling' },
+            5: { category: 'design', topic: dirTopic },
+            6: { category: 'concurrency', topic: dirTopic },
+            7: { category: 'testing', topic: dirTopic },
+            8: { category: 'testing', topic: 'benchmarks' },
+            9: { category: 'profiling', topic: dirTopic }
+        };
+
+        return chapMap[chap] || { category: 'general', topic: dirTopic };
+    }
+
+    // Fallback
+    return { category: 'general', topic: 'general' };
+}
+
+// Discover all files in the goNotebook directory with categorization
+function discoverGoNotebookFiles() {
+    if (!fs.existsSync(GONOTEBOOK_PATH)) {
+        console.error(`[GoNotebook] Directory not found: ${GONOTEBOOK_PATH}`);
+        return [];
+    }
+
+    const allFiles = walkDir(GONOTEBOOK_PATH);
+    const discovered = [];
+
+    for (const filePath of allFiles) {
+        const fileType = filePath.endsWith('.md') ? 'md' : 'go';
+        const { category, topic } = categorizeFile(filePath);
+        discovered.push({ filePath, fileType, category, topic });
+    }
+
+    console.log(`[GoNotebook] Discovered ${discovered.length} files`);
+    return discovered;
+}
+
+// Sleep helper for rate limiting
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Ingest all goNotebook files into Qdrant
+// Chunks files, generates embeddings via Ollama, and upserts to Qdrant in batches
+async function ingestGoNotebook() {
+    const files = discoverGoNotebookFiles();
+    if (files.length === 0) {
+        console.log('[GoNotebook] No files to ingest');
+        return { chunksIngested: 0, errors: 0 };
+    }
+
+    // Prioritize the design philosophy README (ingest first)
+    files.sort((a, b) => {
+        if (a.category === 'philosophy') return -1;
+        if (b.category === 'philosophy') return 1;
+        return 0;
+    });
+
+    // Chunk all files
+    let allChunks = [];
+    for (const file of files) {
+        const chunks = file.fileType === 'md'
+            ? chunkMarkdownFile(file.filePath, file.category, file.topic)
+            : chunkGoFile(file.filePath, file.category, file.topic);
+        allChunks = allChunks.concat(chunks);
+    }
+
+    console.log(`[GoNotebook] Total chunks to ingest: ${allChunks.length}`);
+
+    let ingested = 0;
+    let errors = 0;
+    const batchSize = 10;
+
+    for (let i = 0; i < allChunks.length; i += batchSize) {
+        const batch = allChunks.slice(i, i + batchSize);
+        const points = [];
+
+        for (const chunk of batch) {
+            try {
+                const embedding = await generateEmbeddings(chunk.text.substring(0, 4000));
+                if (!embedding) {
+                    errors++;
+                    continue;
+                }
+
+                points.push({
+                    id: Date.now() + ingested + errors,
+                    vector: embedding,
+                    payload: {
+                        text: chunk.text,
+                        ...chunk.metadata,
+                        timestamp: new Date().toISOString()
+                    }
+                });
+                ingested++;
+            } catch (err) {
+                console.error(`[GoNotebook] Embedding error: ${err.message}`);
+                errors++;
+            }
+        }
+
+        if (points.length > 0) {
+            try {
+                await httpRequest(`${QDRANT_URL}/collections/${GO_PRINCIPLES_COLLECTION}/points`, 'PUT', {
+                    points
+                });
+            } catch (err) {
+                console.error(`[GoNotebook] Qdrant upsert error: ${err.message}`);
+                errors += points.length;
+                ingested -= points.length;
+            }
+        }
+
+        if (i + batchSize < allChunks.length) {
+            console.log(`[GoNotebook] Ingested ${ingested}/${allChunks.length} chunks`);
+            await sleep(500); // Rate limit for Ollama
+        }
+    }
+
+    console.log(`[GoNotebook] Ingestion complete: ${ingested} chunks ingested, ${errors} errors`);
+    return { chunksIngested: ingested, errors };
+}
+
+// Search go_principles collection for relevant Go design principles
+async function searchGoPrinciples(queryText, limit = 5) {
+    try {
+        const embedding = await generateEmbeddings(queryText.substring(0, 2000));
+        if (!embedding) {
+            console.log('[GoNotebook] Failed to generate query embedding');
+            return [];
+        }
+
+        // Check if any category keywords are present for filtered search
+        const categoryKeywords = {
+            concurrency: ['concurrency', 'goroutine', 'channel', 'mutex', 'sync', 'parallel', 'async'],
+            design: ['design', 'pattern', 'architecture', 'composition', 'interface', 'decouple', 'decoupling'],
+            testing: ['test', 'testing', 'benchmark', 'mock', 'assert'],
+            language: ['syntax', 'pointer', 'value', 'semantics', 'struct', 'slice', 'map', 'type'],
+            profiling: ['profile', 'profiling', 'pprof', 'trace', 'memory', 'cpu'],
+            packages: ['package', 'module', 'dependency', 'import'],
+            generics: ['generic', 'generics', 'type parameter', 'constraint']
+        };
+
+        const lowerQuery = queryText.toLowerCase();
+        let filter = null;
+
+        for (const [category, keywords] of Object.entries(categoryKeywords)) {
+            if (keywords.some(kw => lowerQuery.includes(kw))) {
+                filter = {
+                    should: [
+                        { key: 'category', match: { value: category } },
+                        { key: 'category', match: { value: 'philosophy' } }
+                    ]
+                };
+                break;
+            }
+        }
+
+        const searchPayload = {
+            vector: embedding,
+            limit,
+            with_payload: true
+        };
+        if (filter) {
+            searchPayload.filter = filter;
+        }
+
+        const response = await httpRequest(
+            `${QDRANT_URL}/collections/${GO_PRINCIPLES_COLLECTION}/points/search`,
+            'POST',
+            searchPayload
+        );
+
+        if (response.status === 200 && response.data.result) {
+            return response.data.result.map(r => ({
+                text: r.payload.text,
+                score: r.score,
+                metadata: {
+                    category: r.payload.category,
+                    topic: r.payload.topic,
+                    file_path: r.payload.file_path,
+                    section_heading: r.payload.section_heading
+                }
+            }));
+        }
+
+        return [];
+    } catch (err) {
+        console.error(`[GoNotebook] Search error: ${err.message}`);
+        return [];
+    }
+}
+
+// Format retrieved Go principles into a markdown context block for prompt injection
+function formatGoPrinciplesContext(results) {
+    if (!results || results.length === 0) return '';
+
+    let context = `\n## Go Design Principles (Retrieved from Ultimate Go Notebook)\n\n`;
+    context += `The following Go design principles and patterns are relevant to this feature request.\n`;
+    context += `Follow these guidelines when implementing:\n\n`;
+
+    let totalChars = context.length;
+    const maxChars = 4000;
+
+    for (const r of results) {
+        const section = `### ${r.metadata.topic || 'General'} (${r.metadata.category || 'general'})\n${r.text}\n\n---\n\n`;
+
+        if (totalChars + section.length > maxChars) {
+            // Truncate this section to fit
+            const remaining = maxChars - totalChars - 50;
+            if (remaining > 200) {
+                context += `### ${r.metadata.topic || 'General'} (${r.metadata.category || 'general'})\n${r.text.substring(0, remaining)}...\n\n`;
+            }
+            break;
+        }
+
+        context += section;
+        totalChars += section.length;
+    }
+
+    return context;
+}
+
 // Execute dd_lib Python tools
 function executeDDLibTool(toolName, params = {}) {
     return new Promise((resolve, reject) => {
@@ -822,19 +1722,87 @@ function loadIncidentTemplate(templateId) {
     return null;
 }
 
-// Invoke Claude using either CLI (token) or SDK (API key)
-async function invokeClaudeCode(prompt, workDir = WORK_DIR) {
-    const authMethod = getAuthMethod();
+// Parse Retry-After value from an error message (returns ms or null)
+function parseRetryAfter(err) {
+    const match = (err.message || '').match(/retry.after[:\s]*(\d+)/i);
+    if (match) return parseInt(match[1], 10) * 1000;
+    return null;
+}
 
-    console.log(`[Claude] Auth method: ${authMethod || 'none'}`);
-
-    if (authMethod === 'token') {
-        return invokeClaudeCodeCLI(prompt, workDir);
-    } else if (authMethod === 'apikey') {
-        return invokeClaudeCodeSDK(prompt);
-    } else {
-        throw new Error('No valid Claude authentication. Set ANTHROPIC_API_KEY or provide credentials.json via claude login');
+// Retry wrapper with exponential backoff, error classification, and token refresh
+async function retryWithBackoff(fn, context = {}) {
+    const RETRY_CONFIG = {
+        auth:       { maxRetries: 2, baseDelay: 1000 },
+        rate_limit: { maxRetries: 3, baseDelay: 60000 },
+        network:    { maxRetries: 4, baseDelay: 1000 },
+        unknown:    { maxRetries: 0, baseDelay: 0 }
+    };
+    let lastError;
+    const maxPossibleRetries = Math.max(...Object.values(RETRY_CONFIG).map(c => c.maxRetries));
+    for (let attempt = 0; attempt <= maxPossibleRetries; attempt++) {
+        try {
+            if (attempt === 0 && getAuthMethod() === 'token' && isTokenExpiringSoon()) {
+                structuredLog('info', 'proactive_token_refresh', context);
+                await refreshOAuthToken();
+            }
+            return await fn();
+        } catch (err) {
+            lastError = err;
+            const errorType = err.errorType || classifyError(err, err.stderr || '');
+            const config = RETRY_CONFIG[errorType] || RETRY_CONFIG.unknown;
+            structuredLog('warn', 'claude_invoke_retry', {
+                ...context,
+                error_type: errorType,
+                error_message: err.message,
+                attempt: attempt + 1,
+                max_retries: config.maxRetries
+            });
+            if (attempt >= config.maxRetries) break;
+            if (errorType === 'auth') {
+                try {
+                    await refreshOAuthToken();
+                    structuredLog('info', 'token_refresh_after_auth_error', context);
+                } catch (refreshErr) {
+                    structuredLog('error', 'token_refresh_failed', {
+                        ...context,
+                        error_message: refreshErr.message
+                    });
+                    break;
+                }
+            } else if (errorType === 'rate_limit') {
+                const retryAfter = parseRetryAfter(err) || config.baseDelay;
+                structuredLog('info', 'rate_limit_wait', { ...context, wait_ms: retryAfter });
+                await sleep(retryAfter);
+                continue;
+            }
+            const delay = config.baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
+            structuredLog('info', 'backoff_wait', { ...context, wait_ms: Math.round(delay) });
+            await sleep(delay);
+        }
     }
+    lastError.retriesExhausted = true;
+    lastError.errorType = lastError.errorType || classifyError(lastError, lastError.stderr || '');
+    throw lastError;
+}
+
+// Invoke Claude using either CLI (token) or SDK (API key) with retry and backoff
+async function invokeClaudeCode(prompt, workDir = WORK_DIR, context = {}) {
+    return retryWithBackoff(async () => {
+        const authMethod = getAuthMethod();
+        structuredLog('info', 'claude_invoke_start', {
+            ...context,
+            auth_method: authMethod
+        });
+        if (authMethod === 'token') {
+            return invokeClaudeCodeCLI(prompt, workDir);
+        } else if (authMethod === 'apikey') {
+            return invokeClaudeCodeSDK(prompt);
+        } else {
+            const err = new Error('No valid Claude authentication. Set ANTHROPIC_API_KEY or provide credentials.json via claude login');
+            err.errorType = 'auth';
+            throw err;
+        }
+    }, context);
 }
 
 // Original CLI approach (uses OAuth token from credentials.json)
@@ -870,12 +1838,18 @@ function invokeClaudeCodeCLI(prompt, workDir = WORK_DIR) {
             if (code === 0) {
                 resolve(stdout);
             } else {
-                reject(new Error(`Claude CLI exited with code ${code}: ${stderr}`));
+                const err = new Error(`Claude CLI exited with code ${code}: ${stderr}`);
+                err.exitCode = code;
+                err.stderr = stderr;
+                err.errorType = classifyError(err, stderr);
+                reject(err);
             }
         });
 
         claude.on('error', err => {
-            reject(new Error(`Failed to spawn Claude CLI: ${err.message}`));
+            const wrappedErr = new Error(`Failed to spawn Claude CLI: ${err.message}`);
+            wrappedErr.errorType = classifyError(err, '');
+            reject(wrappedErr);
         });
     });
 }
@@ -944,12 +1918,27 @@ async function processGitHubIssue(issueData) {
         pastIssuesContext += `\n`;
     }
 
+    // Retrieve relevant Go design principles from goNotebook RAG
+    let goPrinciplesContext = '';
+    try {
+        const queryText = `${safeTitle} ${safeBody}`.substring(0, 1000);
+        const principles = await searchGoPrinciples(queryText, 5);
+        if (principles.length > 0) {
+            goPrinciplesContext = formatGoPrinciplesContext(principles);
+            console.log(`[GitHub] Retrieved ${principles.length} Go principles for issue #${issue_number}`);
+        }
+    } catch (err) {
+        console.error(`[GitHub] Failed to retrieve Go principles: ${err.message}`);
+        // Continue without principles - graceful degradation
+    }
+
     const prompt = `You are implementing a feature request from GitHub issue #${issue_number} in the ${safeRepo} repository.
 
 ## Issue: ${safeTitle}
 
 ${safeBody}
 ${pastIssuesContext}
+${goPrinciplesContext}
 ## CRITICAL: Duplicate Detection
 
 Before implementing anything, carefully compare this issue against the Previously Processed Issues list above.
@@ -962,16 +1951,22 @@ If this issue requests a feature that has ALREADY been implemented (same functio
 ## Instructions (only if NOT a duplicate)
 
 1. Read the CLAUDE.md and any agentic_instructions.md files in relevant directories to understand project patterns
-2. Explore the existing codebase to understand architecture and conventions
-3. Plan the implementation by identifying which files need to be created or modified
-4. Implement the feature following existing patterns:
+2. **IMPORTANT**: Follow the Go design principles provided above (if present). Specifically:
+   - Use value/pointer semantics consistently
+   - Design interfaces based on behavior, not data
+   - Handle errors as part of the main code path
+   - Keep interfaces small (1-2 methods)
+   - Write code that is readable by the average developer
+3. Explore the existing codebase to understand architecture and conventions
+4. Plan the implementation by identifying which files need to be created or modified
+5. Implement the feature following existing patterns:
    - Go handlers return (int, any) for status code and response body
    - PostgreSQL uses $1, $2 placeholders
    - Route registration uses utils.Endpoint() or utils.EndpointWithPathParams()
    - Services follow the handler.go / storage.go / types.go pattern
-5. Create a new git branch named "feature/issue-${issue_number}" from the current branch
-6. Commit your changes with a descriptive message referencing issue #${issue_number}
-7. Output a JSON summary in this exact format:
+6. Create a new git branch named "feature/issue-${issue_number}" from the current branch
+7. Commit your changes with a descriptive message referencing issue #${issue_number}
+8. Output a JSON summary in this exact format:
 
 \`\`\`json
 {
@@ -994,7 +1989,11 @@ If this issue requests a feature that has ALREADY been implemented (same functio
 
 IMPORTANT: Your final output MUST contain the JSON block above so results can be parsed.`;
 
-    const result = await invokeClaudeCode(prompt, WORK_DIR);
+    const result = await invokeClaudeCode(prompt, WORK_DIR, {
+        issue_number: issue_number,
+        repo_name: safeRepo,
+        endpoint: '/github-issue'
+    });
 
     // Parse JSON summary from Claude's output
     const jsonMatch = result.match(/```json\n([\s\S]*?)\n```/);
@@ -1129,6 +2128,183 @@ async function closeGitHubIssue(repoName, issueNumber, reason) {
     });
 }
 
+// ============================================================================
+// Failure Alerting - Creates Datadog events and notebooks on pipeline failures
+// ============================================================================
+
+// Create a Datadog event to record an RCA pipeline failure
+async function createFailureEvent(context, err) {
+    if (!DD_API_KEY || !DD_APP_KEY) {
+        structuredLog('warn', 'failure_event_skip', { reason: 'no DD keys' });
+        return null;
+    }
+    const errorType = err.errorType || classifyError(err, err.stderr || '');
+    const title = `[RCA Pipeline Failure] ${context.monitor_name || 'Unknown Monitor'}`;
+    const text = `## RCA Pipeline Failure\n\n` +
+        `**Monitor:** ${context.monitor_name || 'N/A'} (ID: ${context.monitor_id || 'N/A'})\n` +
+        `**Endpoint:** ${context.endpoint || 'N/A'}\n` +
+        `**Error Type:** ${errorType}\n` +
+        `**Error:** ${err.message}\n` +
+        `**Retries Exhausted:** ${err.retriesExhausted || false}\n` +
+        `**Timestamp:** ${new Date().toISOString()}\n`;
+
+    const eventPayload = {
+        title,
+        text,
+        priority: 'normal',
+        tags: [
+            'service:claude-agent-sidecar',
+            `error_type:${errorType}`,
+            `endpoint:${context.endpoint || 'unknown'}`,
+            context.monitor_id ? `monitor_id:${context.monitor_id}` : null,
+            'source:rca_pipeline'
+        ].filter(Boolean),
+        alert_type: 'error',
+        source_type_name: 'custom'
+    };
+
+    try {
+        const response = await httpRequest(`${DD_API_URL}/api/v1/events`, 'POST', eventPayload, {
+            'DD-API-KEY': DD_API_KEY,
+            'DD-APPLICATION-KEY': DD_APP_KEY
+        });
+        if (response.status === 200 || response.status === 202) {
+            structuredLog('info', 'failure_event_created', {
+                event_id: response.data?.event?.id,
+                monitor_id: context.monitor_id
+            });
+            return response.data;
+        }
+        structuredLog('error', 'failure_event_api_error', {
+            status: response.status,
+            body: JSON.stringify(response.data).substring(0, 500)
+        });
+        return null;
+    } catch (eventErr) {
+        structuredLog('error', 'failure_event_error', { error_message: eventErr.message });
+        return null;
+    }
+}
+
+// Get manual investigation steps based on error type
+function getManualInvestigationSteps(errorType) {
+    const steps = {
+        auth: [
+            '1. Check if OAuth token in credentials.json has expired',
+            '2. Run `claude login` to re-authenticate',
+            '3. Verify ANTHROPIC_API_KEY environment variable if using API key mode',
+            '4. Check Anthropic API status: https://status.anthropic.com'
+        ],
+        rate_limit: [
+            '1. Check current API usage in Anthropic Console',
+            '2. Review rate limit headers from recent responses',
+            '3. Consider increasing retry delay or reducing concurrent analyses',
+            '4. Check if other services are consuming the same API quota'
+        ],
+        network: [
+            '1. Check DNS resolution: `nslookup console.anthropic.com`',
+            '2. Test connectivity: `curl -v https://api.anthropic.com/v1/messages`',
+            '3. Check firewall/proxy rules for outbound HTTPS',
+            '4. Verify container network configuration and DNS settings'
+        ],
+        unknown: [
+            '1. Check Claude agent sidecar logs for full stack trace',
+            '2. Verify Claude CLI is installed and accessible in PATH',
+            '3. Check container resource limits (memory/CPU)',
+            '4. Review recent changes to agent-server.js or Dockerfile'
+        ]
+    };
+    return steps[errorType] || steps.unknown;
+}
+
+// Create a minimal Datadog notebook documenting a pipeline failure
+async function createFailureNotebook(context, err, fullPayload = {}) {
+    if (!DD_API_KEY || !DD_APP_KEY) {
+        return null;
+    }
+    const errorType = err.errorType || classifyError(err, err.stderr || '');
+    const timestamp = new Date().toISOString();
+    const monitorId = context.monitor_id || fullPayload.monitor_id || 'N/A';
+    const monitorName = context.monitor_name || fullPayload.monitor_name || 'Unknown';
+    const hostname = fullPayload.hostname || 'N/A';
+    const service = fullPayload.service || 'N/A';
+    const investigationSteps = getManualInvestigationSteps(errorType);
+
+    const notebookData = {
+        data: {
+            type: "notebooks",
+            attributes: {
+                name: `[RCA Failure] ${monitorName.substring(0, 40)} - ${timestamp.split('T')[0]}`,
+                cells: [
+                    {
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: `# RCA Pipeline Failure Report\n\n` +
+                                    `**Generated:** ${timestamp}\n\n` +
+                                    `---\n\n` +
+                                    `| Field | Value |\n` +
+                                    `|-------|-------|\n` +
+                                    `| Monitor ID | ${monitorId} |\n` +
+                                    `| Monitor Name | ${monitorName} |\n` +
+                                    `| Hostname | ${hostname} |\n` +
+                                    `| Service | ${service} |\n` +
+                                    `| Alert Status | ${fullPayload.alert_status || fullPayload.alertStatus || 'N/A'} |\n`
+                            }
+                        }
+                    },
+                    {
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: `## Error Details\n\n` +
+                                    `| Field | Value |\n` +
+                                    `|-------|-------|\n` +
+                                    `| Error Type | **${errorType}** |\n` +
+                                    `| Error Message | ${err.message.substring(0, 500)} |\n` +
+                                    `| Retries Exhausted | ${err.retriesExhausted || false} |\n` +
+                                    `| Endpoint | ${context.endpoint || 'N/A'} |\n`
+                            }
+                        }
+                    },
+                    {
+                        type: "notebook_cells",
+                        attributes: {
+                            definition: {
+                                type: "markdown",
+                                text: `## Manual Investigation Steps\n\n` +
+                                    investigationSteps.join('\n') + '\n'
+                            }
+                        }
+                    }
+                ],
+                time: { live_span: "1h" },
+                status: "published"
+            }
+        }
+    };
+
+    try {
+        const response = await httpRequest(`${DD_API_URL}/api/v1/notebooks`, 'POST', notebookData, {
+            'DD-API-KEY': DD_API_KEY,
+            'DD-APPLICATION-KEY': DD_APP_KEY
+        });
+        if (response.status === 200 || response.status === 201) {
+            const notebookId = response.data?.data?.id;
+            const notebookUrl = `${DD_APP_URL}/notebook/${notebookId}`;
+            structuredLog('info', 'failure_notebook_created', { notebook_url: notebookUrl });
+            return { id: notebookId, url: notebookUrl };
+        }
+        structuredLog('error', 'failure_notebook_api_error', { status: response.status });
+        return null;
+    } catch (nbErr) {
+        structuredLog('error', 'failure_notebook_error', { error_message: nbErr.message });
+        return null;
+    }
+}
+
 // HTTP Server
 const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -1160,8 +2336,13 @@ const server = http.createServer(async (req, res) => {
             const scope = fullPayload.scope;
             const tags = fullPayload.tags;
             const hostname = fullPayload.hostname;
-            const service = fullPayload.service;
+            const rawService = fullPayload.service;
+            const service = resolveServiceName(fullPayload);
             const applicationTeam = fullPayload.APPLICATION_TEAM || fullPayload.application_team;
+
+            // Write resolved service back to payload so downstream functions use it
+            fullPayload.service = service;
+            console.log(`[Analyze] Resolved service name: "${service}" (raw: "${rawService || 'N/A'}", APPLICATION_TEAM: "${applicationTeam || 'N/A'}")`);
 
             // Try to extract monitor ID from DETAILED_DESCRIPTION URL if not provided
             if (!monitorId && fullPayload.DETAILED_DESCRIPTION) {
@@ -1431,20 +2612,56 @@ ${similarRCAContext}
 
 ${incidentTemplate ? `## Output Template\n${JSON.stringify(incidentTemplate, null, 2)}` : ''}
 
-## Analysis Instructions
-Based on the LIVE Datadog data above (logs, host info, events, monitor config), provide:
+## Analysis Output Format
 
-1) **Root Cause Analysis** - What is the most likely cause? Cite specific evidence from the logs or events.
-2) **Confidence Level** - low/medium/high with reasoning based on available data
-3) **Immediate Actions** - Two specific recommendations to mitigate the issue
-4) **Related Impact** - Other services/hosts that may be affected based on the data
+Structure your analysis as Datadog Notebook markdown:
 
-If logs show specific errors, quote them. If host metrics are abnormal, mention them. Ground your analysis in the actual data provided.`;
+### Start with:
+# 🔬 Root Cause Analysis
+> **Assessment:** {one sentence summary of root cause}
+
+### Then evidence sections numbered ① ② ③ ④:
+Each evidence section should follow this pattern:
+### ① 📜 Log Evidence — {brief label}
+\`\`\`
+{paste actual evidence from the data above}
+\`\`\`
+> 💡 {your insight interpreting this evidence}
+
+Use these evidence types as applicable (skip if no data):
+- 📜 Log Evidence
+- 📊 Metric Evidence
+- 📅 Event Evidence (deploys, config changes)
+- 🔎 APM Trace Evidence
+
+### Then include:
+## 🎯 Confidence Level
+| Level | Assessment | Reasoning |
+|-------|-----------|-----------|
+| 🟢/🟡/🟠 | High/Medium/Low | {your reasoning based on evidence quality} |
+
+## 🔧 Immediate Actions
+| Priority | Action | Rationale |
+|----------|--------|-----------|
+| 🔴 P1 | {most urgent action} | {why} |
+| 🟡 P2 | {second action} | {why} |
+
+## 🌊 Related Impact
+| Affected | Type | Evidence |
+|----------|------|----------|
+| {service or host name} | {downstream/upstream/shared-resource} | {what evidence shows this} |
+
+Use code blocks for actual log lines, metric values, and trace data. Use > 💡 for insights.
+Cite specific data from the Datadog context above. Do NOT fabricate evidence.`;
 
             console.log(`[Analyze] Processing alert for monitor ${monitorId}: ${monitorName}`);
             console.log(`[Analyze] Full payload received with ${Object.keys(fullPayload).length} fields`);
 
-            const result = await invokeClaudeCode(prompt);
+            const result = await invokeClaudeCode(prompt, WORK_DIR, {
+                monitor_id: monitorId,
+                monitor_name: monitorName,
+                endpoint: '/analyze'
+            });
 
             // Store this RCA in vector DB with full payload for future reference
             if (alertEmbedding) {
@@ -1471,9 +2688,49 @@ If logs show specific errors, quote them. If host metrics are abnormal, mention 
             });
 
         } catch (err) {
-            console.error(`[Analyze] Error: ${err.message}`);
+            const errorType = err.errorType || classifyError(err, err.stderr || '');
+            const analyzeContext = {
+                monitor_id: fullPayload?.monitor_id,
+                monitor_name: fullPayload?.monitor_name,
+                endpoint: '/analyze'
+            };
+            structuredLog('error', 'analyze_pipeline_failed', {
+                ...analyzeContext,
+                error_type: errorType,
+                error_message: err.message,
+                retries_exhausted: err.retriesExhausted || false
+            });
+
+            // Create Datadog failure event (best-effort, don't block response)
+            let failureEvent = null;
+            let failureNotebook = null;
+            try {
+                failureEvent = await createFailureEvent(analyzeContext, err);
+            } catch (_) { /* best effort */ }
+
+            // Create failure notebook for auth/unknown errors
+            if (errorType === 'auth' || errorType === 'unknown') {
+                try {
+                    failureNotebook = await createFailureNotebook(analyzeContext, err, fullPayload || {});
+                } catch (_) { /* best effort */ }
+            }
+
+            // Send desktop notification for pipeline failure
+            try {
+                await sendDesktopNotification({
+                    ALERT_STATE: 'RCA_FAILURE',
+                    ALERT_TITLE: `RCA Pipeline Failure: ${analyzeContext.monitor_name || 'Unknown'}`,
+                    DETAILED_DESCRIPTION: `Error type: ${errorType} - ${err.message}`,
+                    URGENCY: 'high'
+                });
+            } catch (_) { /* best effort */ }
+
             sendJson(res, 500, {
                 error: err.message,
+                error_type: errorType,
+                retries_exhausted: err.retriesExhausted || false,
+                failure_event: failureEvent ? { id: failureEvent.event?.id } : null,
+                failure_notebook: failureNotebook ? { id: failureNotebook.id, url: failureNotebook.url } : null,
                 timestamp: new Date().toISOString()
             });
         }
@@ -1492,11 +2749,16 @@ If logs show specific errors, quote them. If host metrics are abnormal, mention 
             let monitorName = fullPayload.monitor_name || fullPayload.monitorName;
             const alertStatus = fullPayload.alert_status || fullPayload.alertStatus;
             const hostname = fullPayload.hostname;
-            const service = fullPayload.service;
+            const rawService = fullPayload.service;
+            const service = resolveServiceName(fullPayload);
             const scope = fullPayload.scope;
             const tags = fullPayload.tags;
             const applicationTeam = fullPayload.APPLICATION_TEAM || fullPayload.application_team;
             const triggerTime = new Date(fullPayload.timestamp ? fullPayload.timestamp * 1000 : Date.now()).toISOString();
+
+            // Write resolved service back to payload for downstream functions
+            fullPayload.service = service;
+            console.log(`[Watchdog] Resolved service name: "${service}" (raw: "${rawService || 'N/A'}", APPLICATION_TEAM: "${applicationTeam || 'N/A'}")`);
 
             // Resolve monitor ID from description URL if not provided
             if (!monitorId && fullPayload.DETAILED_DESCRIPTION) {
@@ -1679,7 +2941,11 @@ Watchdog alerts indicate ML-detected anomalies that deviate significantly from h
 
 Ground your analysis in the live Datadog data provided. Quote specific log entries, metrics, or events as evidence.`;
 
-            const result = await invokeClaudeCode(prompt);
+            const result = await invokeClaudeCode(prompt, WORK_DIR, {
+                monitor_id: monitorId,
+                monitor_name: monitorName,
+                endpoint: '/watchdog'
+            });
 
             // Store in vector DB
             if (alertEmbedding) {
@@ -1706,12 +2972,135 @@ Ground your analysis in the live Datadog data provided. Quote specific log entri
             });
 
         } catch (err) {
-            console.error(`[Watchdog] Error: ${err.message}`);
+            const errorType = err.errorType || classifyError(err, err.stderr || '');
+            const watchdogContext = {
+                monitor_id: fullPayload?.monitor_id,
+                monitor_name: fullPayload?.monitor_name,
+                endpoint: '/watchdog'
+            };
+            structuredLog('error', 'watchdog_pipeline_failed', {
+                ...watchdogContext,
+                error_type: errorType,
+                error_message: err.message,
+                retries_exhausted: err.retriesExhausted || false
+            });
+
+            let failureEvent = null;
+            let failureNotebook = null;
+            try {
+                failureEvent = await createFailureEvent(watchdogContext, err);
+            } catch (_) { /* best effort */ }
+
+            if (errorType === 'auth' || errorType === 'unknown') {
+                try {
+                    failureNotebook = await createFailureNotebook(watchdogContext, err, fullPayload || {});
+                } catch (_) { /* best effort */ }
+            }
+
+            try {
+                await sendDesktopNotification({
+                    ALERT_STATE: 'RCA_FAILURE',
+                    ALERT_TITLE: `Watchdog Pipeline Failure: ${watchdogContext.monitor_name || 'Unknown'}`,
+                    DETAILED_DESCRIPTION: `Error type: ${errorType} - ${err.message}`,
+                    URGENCY: 'high'
+                });
+            } catch (_) { /* best effort */ }
+
+            sendJson(res, 500, {
+                error: err.message,
+                error_type: errorType,
+                retries_exhausted: err.retriesExhausted || false,
+                failure_event: failureEvent ? { id: failureEvent.event?.id } : null,
+                failure_notebook: failureNotebook ? { id: failureNotebook.id, url: failureNotebook.url } : null,
+                timestamp: new Date().toISOString()
+            });
+        }
+        return;
+    }
+
+    // Recovery endpoint - handles recovery webhooks and updates existing notebooks
+    // When a monitor transitions to OK/Recovered, this finds and resolves the matching notebook
+    if (url.pathname === '/recover' && req.method === 'POST') {
+        try {
+            const body = await parseBody(req);
+            const { payload } = body;
+
+            const fullPayload = payload || body;
+            const monitorId = fullPayload.monitor_id || fullPayload.monitorId;
+            const monitorName = fullPayload.monitor_name || fullPayload.monitorName ||
+                fullPayload.ALERT_TITLE || fullPayload.alert_title || 'Unknown Monitor';
+            const alertStatus = fullPayload.alert_status || fullPayload.alertStatus || 'OK';
+            const recoveryTimestamp = new Date().toISOString();
+
+            console.log(`[Recovery] Recovery event for monitor ${monitorId}: ${monitorName} (status: ${alertStatus})`);
+
+            if (!monitorId) {
+                sendJson(res, 400, { error: 'monitor_id is required for recovery' });
+                return;
+            }
+
+            // Send desktop notification for recovery
+            await sendDesktopNotification({
+                ...fullPayload,
+                ALERT_STATE: 'Recovered',
+                ALERT_TITLE: `RECOVERED: ${monitorName}`
+            });
+
+            // Look up the notebook in the registry
+            const entry = notebookRegistry.get(String(monitorId));
+            let notebookResult = null;
+
+            if (entry && entry.notebookId) {
+                console.log(`[Recovery] Found notebook ${entry.notebookId} for monitor ${monitorId} (status: ${entry.status})`);
+                notebookResult = await resolveNotebook(entry.notebookId, monitorId, monitorName, recoveryTimestamp);
+            } else {
+                console.log(`[Recovery] No notebook found in registry for monitor ${monitorId}`);
+                // Try to find by explicit notebook_id in the payload (for manual recovery)
+                const explicitNotebookId = fullPayload.notebook_id || fullPayload.notebookId;
+                if (explicitNotebookId) {
+                    console.log(`[Recovery] Using explicit notebook_id from payload: ${explicitNotebookId}`);
+                    notebookResult = await resolveNotebook(explicitNotebookId, monitorId, monitorName, recoveryTimestamp);
+                }
+            }
+
+            sendJson(res, 200, {
+                success: true,
+                monitorId,
+                monitorName,
+                alertStatus,
+                recoveryTimestamp,
+                notebookUpdated: !!notebookResult,
+                notebookId: entry?.notebookId || null,
+                notebookUrl: entry?.notebookId ? `${DD_APP_URL}/notebook/${entry.notebookId}` : null,
+                registryStatus: entry?.status || 'not_found',
+                timestamp: new Date().toISOString()
+            });
+
+        } catch (err) {
+            console.error(`[Recovery] Error: ${err.message}`);
             sendJson(res, 500, {
                 error: err.message,
                 timestamp: new Date().toISOString()
             });
         }
+        return;
+    }
+
+    // Notebook registry status endpoint - lists all tracked notebooks and their lifecycle status
+    if (url.pathname === '/notebooks/registry' && req.method === 'GET') {
+        const entries = [];
+        for (const [monitorId, entry] of notebookRegistry) {
+            entries.push({
+                monitorId,
+                ...entry,
+                notebookUrl: `${DD_APP_URL}/notebook/${entry.notebookId}`
+            });
+        }
+        sendJson(res, 200, {
+            count: entries.length,
+            notebooks: entries,
+            timestamp: new Date().toISOString()
+        });
         return;
     }
 
@@ -1744,7 +3133,9 @@ ${template || 'Use standard incident report format'}
 
 Return the notebook JSON that can be POSTed to the Datadog Notebooks API.`;
 
-            const result = await invokeClaudeCode(prompt);
+            const result = await invokeClaudeCode(prompt, WORK_DIR, {
+                endpoint: '/generate-notebook'
+            });
 
             sendJson(res, 200, {
                 success: true,
@@ -1836,6 +3227,69 @@ Return the notebook JSON that can be POSTed to the Datadog Notebooks API.`;
             ddLibPath: DD_LIB_DIR,
             writable: true
         });
+        return;
+    }
+
+    // GoNotebook re-ingestion endpoint
+    if (url.pathname === '/go-principles/reingest' && req.method === 'POST') {
+        try {
+            console.log('[GoNotebook] Re-ingestion requested');
+            // Delete existing collection
+            await httpRequest(`${QDRANT_URL}/collections/${GO_PRINCIPLES_COLLECTION}`, 'DELETE');
+            // Re-create and ingest
+            await initGoPrinciplesCollection();
+            const result = await ingestGoNotebook();
+            sendJson(res, 200, { status: 'reingested', ...result });
+        } catch (err) {
+            console.error(`[GoNotebook] Re-ingestion error: ${err.message}`);
+            sendJson(res, 500, { error: err.message });
+        }
+        return;
+    }
+
+    // GoNotebook stats endpoint
+    if (url.pathname === '/go-principles/stats' && req.method === 'GET') {
+        try {
+            const collectionResp = await httpRequest(`${QDRANT_URL}/collections/${GO_PRINCIPLES_COLLECTION}`, 'GET');
+            if (collectionResp.status !== 200) {
+                sendJson(res, 200, { exists: false, pointCount: 0, status: 'not_initialized' });
+                return;
+            }
+            const countResp = await httpRequest(`${QDRANT_URL}/collections/${GO_PRINCIPLES_COLLECTION}/points/count`, 'POST', {});
+            const pointCount = countResp.data?.result?.count || 0;
+
+            // Get a sample of points for inspection
+            let samplePoints = [];
+            try {
+                const scrollResp = await httpRequest(`${QDRANT_URL}/collections/${GO_PRINCIPLES_COLLECTION}/points/scroll`, 'POST', {
+                    limit: 5,
+                    with_payload: true,
+                    with_vector: false
+                });
+                if (scrollResp.data?.result?.points) {
+                    samplePoints = scrollResp.data.result.points.map(p => ({
+                        id: p.id,
+                        category: p.payload.category,
+                        topic: p.payload.topic,
+                        file_path: p.payload.file_path,
+                        section_heading: p.payload.section_heading,
+                        text_preview: (p.payload.text || '').substring(0, 200)
+                    }));
+                }
+            } catch (scrollErr) {
+                // Scroll is optional, don't fail on it
+            }
+
+            sendJson(res, 200, {
+                exists: true,
+                pointCount,
+                gonotebookPath: GONOTEBOOK_PATH,
+                pathExists: fs.existsSync(GONOTEBOOK_PATH),
+                samplePoints
+            });
+        } catch (err) {
+            sendJson(res, 500, { error: err.message });
+        }
         return;
     }
 
@@ -1932,9 +3386,26 @@ server.listen(PORT, async () => {
     console.log(`[Claude Agent] Qdrant URL: ${QDRANT_URL}`);
     console.log(`[Claude Agent] Ollama URL: ${OLLAMA_URL}`);
 
-    // Initialize Qdrant collection on startup
+    // Initialize Qdrant collections on startup
     setTimeout(async () => {
+        // Existing RCA collection init
         const initialized = await initQdrantCollection();
-        console.log(`[Claude Agent] Qdrant collection initialized: ${initialized}`);
+        console.log(`[Claude Agent] Qdrant RCA collection initialized: ${initialized}`);
+
+        // GoNotebook collection init + conditional ingestion
+        try {
+            const goCollection = await initGoPrinciplesCollection();
+            console.log(`[Claude Agent] Go principles collection: ${JSON.stringify(goCollection)}`);
+
+            if (goCollection.exists && goCollection.pointCount > 0) {
+                console.log(`[Claude Agent] Go principles already ingested (${goCollection.pointCount} points), skipping`);
+            } else {
+                console.log(`[Claude Agent] Starting goNotebook ingestion...`);
+                const result = await ingestGoNotebook();
+                console.log(`[Claude Agent] GoNotebook ingestion complete: ${JSON.stringify(result)}`);
+            }
+        } catch (err) {
+            console.error(`[Claude Agent] GoNotebook init error: ${err.message}`);
+        }
     }, 5000); // Wait 5 seconds for Qdrant to be ready
 });
