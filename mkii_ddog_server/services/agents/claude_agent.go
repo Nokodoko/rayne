@@ -51,17 +51,17 @@ func (a *ClaudeAgent) Role() AgentRole {
 
 // Plan determines what queries are needed (for Claude, we do single-shot analysis)
 func (a *ClaudeAgent) Plan(ctx context.Context, event *types.AlertEvent, agentCtx AgentContext) AgentPlan {
-	// For the initial implementation, Claude does single-shot analysis
-	// The RLM loop will iterate once with external /analyze call
-	if agentCtx.Iteration == 0 {
+	// First iteration: delegate to Claude AI sidecar (Analyze phase calls invokeAnalysis)
+	// RLM sets Iteration to 1 before the first Plan call
+	if agentCtx.Iteration <= 1 {
 		return AgentPlan{
 			Complete:  false,
-			Queries:   []SubQuery{}, // No sub-queries needed for Claude sidecar
+			Queries:   []SubQuery{}, // No sub-queries needed — sidecar call happens in Analyze()
 			Reasoning: "Delegating to Claude AI sidecar for comprehensive analysis",
 		}
 	}
 
-	// After first iteration, mark as complete
+	// After sidecar analysis, mark as complete
 	return AgentPlan{
 		Complete:  true,
 		Reasoning: "Analysis completed via Claude sidecar",

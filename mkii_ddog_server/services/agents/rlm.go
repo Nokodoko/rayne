@@ -91,24 +91,23 @@ func (r *RLMCoordinator) Execute(ctx context.Context, agent Agent, event *types.
 			return result, nil
 		}
 
-		// Skip query phase if no queries
-		if len(plan.Queries) == 0 {
-			continue
-		}
+		// QUERY: Fan-out to sub-agents (if any)
+		var results []QueryResult
+		if len(plan.Queries) > 0 {
+			results = r.executeSubQueries(ctx, plan.Queries)
+			agentCtx.QueryHistory = append(agentCtx.QueryHistory, results...)
 
-		// QUERY: Fan-out to sub-agents
-		results := r.executeSubQueries(ctx, plan.Queries)
-		agentCtx.QueryHistory = append(agentCtx.QueryHistory, results...)
-
-		// Check for required query failures
-		for _, result := range results {
-			if result.Query.Required && result.Error != nil {
-				log.Printf("[RLM] Required query failed: %s - %v", result.Query.AgentName, result.Error)
-				return r.buildErrorResult(event, agent, agentCtx, startTime, result.Error), result.Error
+			// Check for required query failures
+			for _, result := range results {
+				if result.Query.Required && result.Error != nil {
+					log.Printf("[RLM] Required query failed: %s - %v", result.Query.AgentName, result.Error)
+					return r.buildErrorResult(event, agent, agentCtx, startTime, result.Error), result.Error
+				}
 			}
 		}
 
-		// ANALYZE: Process results and update context
+		// ANALYZE: Always call Analyze — agents like ClaudeAgent invoke
+		// the sidecar here even without sub-queries
 		agentCtx = agent.Analyze(ctx, results, agentCtx)
 	}
 
