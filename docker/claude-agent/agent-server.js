@@ -1743,7 +1743,15 @@ async function retryWithBackoff(fn, context = {}) {
         try {
             if (attempt === 0 && getAuthMethod() === 'token' && isTokenExpiringSoon()) {
                 structuredLog('info', 'proactive_token_refresh', context);
-                await refreshOAuthToken();
+                try {
+                    await refreshOAuthToken();
+                } catch (refreshErr) {
+                    // Non-fatal: Claude CLI handles its own auth internally
+                    structuredLog('warn', 'proactive_refresh_skipped', {
+                        ...context,
+                        error_message: refreshErr.message
+                    });
+                }
             }
             return await fn();
         } catch (err) {
@@ -2324,12 +2332,13 @@ const server = http.createServer(async (req, res) => {
 
     // RCA Analysis endpoint - accepts full webhook payload
     if (url.pathname === '/analyze' && req.method === 'POST') {
+        let fullPayload = {};
         try {
             const body = await parseBody(req);
             const { payload, template_id, instructions } = body;
 
             // Support both new format (payload object) and legacy format
-            const fullPayload = payload || body;
+            fullPayload = payload || body;
             let monitorId = fullPayload.monitor_id || fullPayload.monitorId;
             let monitorName = fullPayload.monitor_name || fullPayload.monitorName;
             const alertStatus = fullPayload.alert_status || fullPayload.alertStatus;
@@ -2740,11 +2749,12 @@ Cite specific data from the Datadog context above. Do NOT fabricate evidence.`;
     // Watchdog Analysis endpoint - handles Datadog Watchdog anomaly detection monitors
     // Similar to /analyze but with watchdog-specific prompt and notebook formatting
     if (url.pathname === '/watchdog' && req.method === 'POST') {
+        let fullPayload = {};
         try {
             const body = await parseBody(req);
             const { payload } = body;
 
-            const fullPayload = payload || body;
+            fullPayload = payload || body;
             let monitorId = fullPayload.monitor_id || fullPayload.monitorId;
             let monitorName = fullPayload.monitor_name || fullPayload.monitorName;
             const alertStatus = fullPayload.alert_status || fullPayload.alertStatus;

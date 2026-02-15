@@ -150,6 +150,11 @@ func (o *AgentOrchestrator) Analyze(ctx context.Context, event *types.AlertEvent
 // Custom webhook templates often use uppercase fields (ALERT_STATE) while
 // standard fields (alert_status) are empty, so we check both.
 func (o *AgentOrchestrator) ShouldAnalyze(event *types.AlertEvent) bool {
+	// Exclude recovery events first — these go through ShouldRecover instead
+	if o.ShouldRecover(event) {
+		return false
+	}
+
 	status := event.Payload.AlertStatus
 	if status == "Alert" || status == "Warn" {
 		return true
