@@ -18,6 +18,7 @@ type ProcessorOrchestrator struct {
 	fastProcessors []WebhookProcessor
 	agentOrch      *agents.AgentOrchestrator
 	storage        *Storage
+	notifier       *Notifier
 	mu             sync.RWMutex
 }
 
@@ -34,6 +35,7 @@ func NewProcessorOrchestrator(storage *Storage, agentOrch *agents.AgentOrchestra
 		fastProcessors: make([]WebhookProcessor, 0),
 		agentOrch:      agentOrch,
 		storage:        storage,
+		notifier:       NewNotifier(),
 	}
 }
 
@@ -126,6 +128,15 @@ func (o *ProcessorOrchestrator) Process(ctx context.Context, event *WebhookEvent
 			result.ProcessedBy = append(result.ProcessedBy, "agent_"+string(agentResult.AgentRole))
 			if !agentResult.Success && agentResult.Error != "" {
 				result.Errors = append(result.Errors, "agent_analysis: "+agentResult.Error)
+			}
+
+			// Send desktop notification when a notebook is created
+			if agentResult.NotebookURL != "" && o.notifier != nil {
+				o.notifier.NotifyNotebookCreated(
+					agentResult.MonitorName,
+					string(agentResult.AgentRole),
+					agentResult.NotebookURL,
+				)
 			}
 		}
 	} else if o.agentOrch != nil && o.agentOrch.ShouldRecover(alertEvent) {

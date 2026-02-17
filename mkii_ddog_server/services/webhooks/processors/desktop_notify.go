@@ -91,8 +91,11 @@ func (p *DesktopNotifyProcessor) Process(event *webhooks.WebhookEvent, config *w
 		ProcessorName: p.Name(),
 	}
 
+	// Classify the monitor type for the notification
+	monitorType := classifyForNotification(&event.Payload)
+
 	// Forward the full custom payload to notify-server
-	err := p.sendNotification(event.Payload)
+	err := p.sendNotification(event.Payload, monitorType)
 	if err != nil {
 		log.Printf("[NOTIFY-PROC] Error sending notification: %v", err)
 		result.Success = false
@@ -104,8 +107,22 @@ func (p *DesktopNotifyProcessor) Process(event *webhooks.WebhookEvent, config *w
 	title := resolveTitle(event.Payload)
 
 	result.Success = true
-	result.Message = fmt.Sprintf("notification sent: %s", title)
+	result.Message = fmt.Sprintf("notification sent: %s [%s]", title, monitorType)
 	return result
+}
+
+// classifyForNotification determines the monitor type label for desktop notifications.
+func classifyForNotification(payload *webhooks.WebhookPayload) string {
+	if webhooks.IsWatchdogMonitor(payload) {
+		return "watchdog"
+	}
+
+	mt := strings.ToLower(strings.TrimSpace(payload.MonitorType))
+	if mt != "" {
+		return mt
+	}
+
+	return "alert_monitor"
 }
 
 // resolveTitle extracts the best available title from a webhook payload.
@@ -132,15 +149,15 @@ func resolveTitle(p webhooks.WebhookPayload) string {
 }
 
 // sendNotification sends the notification to all configured servers
-func (p *DesktopNotifyProcessor) sendNotification(webhookPayload webhooks.WebhookPayload) error {
+func (p *DesktopNotifyProcessor) sendNotification(webhookPayload webhooks.WebhookPayload, monitorType string) error {
 	log.Printf("[NOTIFY] Sending to %d servers: %v", len(p.serverURLs), p.serverURLs)
 
 	title := resolveTitle(webhookPayload)
 
-	// Build notification payload
+	// Include monitor type in the notification title so users can distinguish webhook types
 	payload := map[string]string{
-		"title":   "💣 " + title,
-		"message": title,
+		"title":   fmt.Sprintf("💣 [%s] %s", monitorType, title),
+		"message": fmt.Sprintf("[%s] %s", monitorType, title),
 		"urgency": "critical",
 	}
 
