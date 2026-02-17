@@ -136,6 +136,9 @@ type AnalysisResult struct {
 	Findings       []Finding `json:"findings"`
 	Recommendations []string  `json:"recommendations"`
 
+	// Notebook created during analysis (URL from Claude sidecar)
+	NotebookURL string `json:"notebook_url,omitempty"`
+
 	// Execution metadata
 	Iterations int           `json:"iterations"`
 	Duration   time.Duration `json:"duration"`

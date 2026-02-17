@@ -71,7 +71,7 @@ func (a *ClaudeAgent) Plan(ctx context.Context, event *types.AlertEvent, agentCt
 // Analyze processes query results (minimal for Claude since it's single-shot)
 func (a *ClaudeAgent) Analyze(ctx context.Context, results []QueryResult, agentCtx AgentContext) AgentContext {
 	// For Claude, we perform the actual analysis here
-	analysis, err := a.invokeAnalysis(ctx, agentCtx.Event)
+	analysis, notebookURL, err := a.invokeAnalysis(ctx, agentCtx.Event)
 	if err != nil {
 		agentCtx.Findings = append(agentCtx.Findings, Finding{
 			Source:    a.name,
@@ -95,6 +95,11 @@ func (a *ClaudeAgent) Analyze(ctx context.Context, results []QueryResult, agentC
 		Timestamp: time.Now(),
 	})
 
+	// Store notebook URL in metadata for propagation to the final result
+	if notebookURL != "" {
+		agentCtx.Metadata["notebook_url"] = notebookURL
+	}
+
 	return agentCtx
 }
 
@@ -111,6 +116,12 @@ func (a *ClaudeAgent) Conclude(ctx context.Context, agentCtx AgentContext) *Anal
 		}
 	}
 
+	// Extract notebook URL from metadata if set during analysis
+	var notebookURL string
+	if url, ok := agentCtx.Metadata["notebook_url"].(string); ok {
+		notebookURL = url
+	}
+
 	return &AnalysisResult{
 		MonitorID:       event.Payload.MonitorID,
 		MonitorName:     event.Payload.MonitorName,
@@ -122,12 +133,14 @@ func (a *ClaudeAgent) Conclude(ctx context.Context, agentCtx AgentContext) *Anal
 		Details:         agentCtx.RootCause,
 		Findings:        agentCtx.Findings,
 		Recommendations: agentCtx.Recommendations,
+		NotebookURL:     notebookURL,
 	}
 }
 
 // invokeAnalysis calls the Claude agent sidecar.
 // Routes watchdog monitors to /watchdog endpoint, all others to /analyze.
-func (a *ClaudeAgent) invokeAnalysis(ctx context.Context, event *types.AlertEvent) (string, error) {
+// Returns the analysis text, an optional notebook URL, and any error.
+func (a *ClaudeAgent) invokeAnalysis(ctx context.Context, event *types.AlertEvent) (string, string, error) {
 	payload := event.Payload
 
 	// Use fallbacks for monitor_id and monitor_name
@@ -168,7 +181,7 @@ func (a *ClaudeAgent) invokeAnalysis(ctx context.Context, event *types.AlertEven
 
 	jsonBody, err := json.Marshal(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
+		return "", "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	// Route watchdog monitors to the /watchdog endpoint
@@ -179,19 +192,19 @@ func (a *ClaudeAgent) invokeAnalysis(ctx context.Context, event *types.AlertEven
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", a.agentURL+endpoint, bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return "", fmt.Errorf("failed to create request: %w", err)
+		return "", "", fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := httpclient.AgentClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
+		return "", "", fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	var response claudeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		return "", fmt.Errorf("failed to decode response: %w", err)
+		return "", "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	if response.Error != "" {
@@ -202,10 +215,15 @@ func (a *ClaudeAgent) invokeAnalysis(ctx context.Context, event *types.AlertEven
 		if response.RetriesExhausted {
 			errorDetail += " (retries exhausted)"
 		}
-		return "", fmt.Errorf("agent error: %s", errorDetail)
+		return "", "", fmt.Errorf("agent error: %s", errorDetail)
 	}
 
-	return response.Analysis, nil
+	var notebookURL string
+	if response.Notebook != nil {
+		notebookURL = response.Notebook.URL
+	}
+
+	return response.Analysis, notebookURL, nil
 }
 
 // InvokeRecovery calls the Claude agent sidecar's /recover endpoint
