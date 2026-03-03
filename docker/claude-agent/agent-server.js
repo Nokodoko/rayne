@@ -2,6 +2,23 @@
 // Wraps Claude Code CLI invocations for RCA analysis and notebook generation
 // Integrates with Qdrant vector DB and Ollama for embeddings
 
+// dd-trace is preloaded via --require dd-trace/init (see Dockerfile CMD)
+// Access the tracer instance for LLM Observability manual spans
+let tracer;
+try {
+    tracer = require('dd-trace');
+    // Enable LLM Observability if configured
+    if (process.env.DD_LLMOBS_ENABLED === '1' || process.env.DD_LLMOBS_ENABLED === 'true') {
+        tracer.llmobs.enable({
+            mlApp: process.env.DD_LLMOBS_ML_APP || 'rayne-rca',
+        });
+        console.log(`[LLMObs] Enabled for ml_app: ${process.env.DD_LLMOBS_ML_APP || 'rayne-rca'}`);
+    }
+} catch (e) {
+    console.log('[LLMObs] dd-trace not available, LLM Observability disabled');
+    tracer = null;
+}
+
 const http = require('http');
 const https = require('https');
 const { spawn } = require('child_process');
@@ -229,10 +246,14 @@ async function refreshOAuthToken() {
     if (!oauth || !oauth.refreshToken) {
         throw new Error('No refresh token available in credentials.json');
     }
-    const tokenUrl = 'https://console.anthropic.com/v1/oauth/token';
+    const tokenUrl = 'https://platform.claude.com/v1/oauth/token';
+    // Match Claude CLI's refresh request format: JSON body with scope parameter
+    const scopes = oauth.scopes || ['user:profile', 'user:inference', 'user:sessions:claude_code', 'user:mcp_servers'];
     const body = JSON.stringify({
         grant_type: 'refresh_token',
         refresh_token: oauth.refreshToken,
+        client_id: '9d1c250a-e61b-44d9-88ed-5944d1962f5e',
+        scope: scopes.join(' '),
     });
     return new Promise((resolve, reject) => {
         const urlObj = new URL(tokenUrl);
@@ -1153,20 +1174,34 @@ async function resolveNotebook(notebookId, monitorId, monitorName, recoveryTimes
 
 // Generate embeddings using Ollama with Gemma
 async function generateEmbeddings(text) {
-    try {
-        const response = await httpRequest(`${OLLAMA_URL}/api/embeddings`, 'POST', {
-            model: 'gemma:2b',
-            prompt: text
-        });
-        if (response.status === 200 && response.data.embedding) {
-            return response.data.embedding;
+    const doEmbed = async (span) => {
+        try {
+            const response = await httpRequest(`${OLLAMA_URL}/api/embeddings`, 'POST', {
+                model: 'gemma:2b',
+                prompt: text
+            });
+            if (response.status === 200 && response.data.embedding) {
+                if (span) {
+                    tracer.llmobs.annotate(span, {
+                        inputData: text.substring(0, 5000),
+                        outputData: `[${response.data.embedding.length} dimensions]`,
+                        metadata: { model: 'gemma:2b', dimensions: response.data.embedding.length },
+                    });
+                }
+                return response.data.embedding;
+            }
+            console.error(`[Ollama] Failed to generate embeddings: ${JSON.stringify(response)}`);
+            return null;
+        } catch (err) {
+            console.error(`[Ollama] Error: ${err.message}`);
+            return null;
         }
-        console.error(`[Ollama] Failed to generate embeddings: ${JSON.stringify(response)}`);
-        return null;
-    } catch (err) {
-        console.error(`[Ollama] Error: ${err.message}`);
-        return null;
+    };
+
+    if (tracer?.llmobs) {
+        return tracer.llmobs.trace({ kind: 'embedding', name: 'ollama-gemma-embed', modelName: 'gemma:2b', modelProvider: 'ollama' }, doEmbed);
     }
+    return doEmbed(null);
 }
 
 // Initialize Qdrant collection if not exists
@@ -1643,7 +1678,7 @@ function formatGoPrinciplesContext(results) {
 
 // Execute dd_lib Python tools
 function executeDDLibTool(toolName, params = {}) {
-    return new Promise((resolve, reject) => {
+    const doExecute = () => new Promise((resolve, reject) => {
         const args = [
             path.join(DD_LIB_DIR, 'dd_lib_tools.py'),
             toolName,
@@ -1681,6 +1716,18 @@ function executeDDLibTool(toolName, params = {}) {
 
         python.on('error', err => reject(err));
     });
+
+    if (tracer?.llmobs) {
+        return tracer.llmobs.trace({ kind: 'tool', name: `ddlib.${toolName}` }, async (span) => {
+            const result = await doExecute();
+            tracer.llmobs.annotate(span, {
+                inputData: JSON.stringify(params),
+                outputData: JSON.stringify(result).substring(0, 10000),
+            });
+            return result;
+        });
+    }
+    return doExecute();
 }
 
 // Create new dd_lib function (auto-write mode)
@@ -1743,15 +1790,7 @@ async function retryWithBackoff(fn, context = {}) {
         try {
             if (attempt === 0 && getAuthMethod() === 'token' && isTokenExpiringSoon()) {
                 structuredLog('info', 'proactive_token_refresh', context);
-                try {
-                    await refreshOAuthToken();
-                } catch (refreshErr) {
-                    // Non-fatal: Claude CLI handles its own auth internally
-                    structuredLog('warn', 'proactive_refresh_skipped', {
-                        ...context,
-                        error_message: refreshErr.message
-                    });
-                }
+                await refreshOAuthToken();
             }
             return await fn();
         } catch (err) {
@@ -1794,17 +1833,20 @@ async function retryWithBackoff(fn, context = {}) {
 }
 
 // Invoke Claude using either CLI (token) or SDK (API key) with retry and backoff
+// Optional model override: 'claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-haiku-4-5-20251001'
 async function invokeClaudeCode(prompt, workDir = WORK_DIR, context = {}) {
+    const model = context.model || null;
     return retryWithBackoff(async () => {
         const authMethod = getAuthMethod();
         structuredLog('info', 'claude_invoke_start', {
             ...context,
-            auth_method: authMethod
+            auth_method: authMethod,
+            model: model || 'default'
         });
         if (authMethod === 'token') {
-            return invokeClaudeCodeCLI(prompt, workDir);
+            return invokeClaudeCodeCLI(prompt, workDir, model);
         } else if (authMethod === 'apikey') {
-            return invokeClaudeCodeSDK(prompt);
+            return invokeClaudeCodeSDK(prompt, model);
         } else {
             const err = new Error('No valid Claude authentication. Set ANTHROPIC_API_KEY or provide credentials.json via claude login');
             err.errorType = 'auth';
@@ -1814,11 +1856,13 @@ async function invokeClaudeCode(prompt, workDir = WORK_DIR, context = {}) {
 }
 
 // Original CLI approach (uses OAuth token from credentials.json)
-function invokeClaudeCodeCLI(prompt, workDir = WORK_DIR) {
-    return new Promise((resolve, reject) => {
-        const args = ['--print', prompt];
+function invokeClaudeCodeCLI(prompt, workDir = WORK_DIR, model = null) {
+    const doInvoke = () => new Promise((resolve, reject) => {
+        const args = ['--print'];
+        if (model) args.push('--model', model);
+        args.push(prompt);
 
-        console.log(`[Claude CLI] Invoking with prompt: ${prompt.substring(0, 100)}...`);
+        console.log(`[Claude CLI] Invoking with prompt: ${prompt.substring(0, 100)}... ${model ? `(model: ${model})` : ''}`);
 
         const claude = spawn('claude', args, {
             cwd: workDir,
@@ -1860,11 +1904,28 @@ function invokeClaudeCodeCLI(prompt, workDir = WORK_DIR) {
             reject(wrappedErr);
         });
     });
+
+    // Wrap with LLM Observability span if available
+    const resolvedModel = model || 'claude-sonnet-4-20250514';
+    if (tracer?.llmobs) {
+        return tracer.llmobs.trace({ kind: 'llm', name: 'claude-cli', modelName: resolvedModel, modelProvider: 'anthropic' }, async (span) => {
+            const result = await doInvoke();
+            tracer.llmobs.annotate(span, {
+                inputData: [{ role: 'user', content: prompt.substring(0, 50000) }],
+                outputData: result.substring(0, 50000),
+                metadata: { auth_method: 'oauth_token', model: resolvedModel },
+                metrics: { input_tokens: Math.ceil(prompt.length / 4), output_tokens: Math.ceil(result.length / 4) },
+            });
+            return result;
+        });
+    }
+    return doInvoke();
 }
 
 // SDK approach (uses API key)
-async function invokeClaudeCodeSDK(prompt) {
-    console.log(`[Claude SDK] Invoking with prompt: ${prompt.substring(0, 100)}...`);
+async function invokeClaudeCodeSDK(prompt, model = null) {
+    const resolvedModel = model || 'claude-sonnet-4-20250514';
+    console.log(`[Claude SDK] Invoking with prompt: ${prompt.substring(0, 100)}... (model: ${resolvedModel})`);
 
     try {
         // Dynamic import of Anthropic SDK
@@ -1872,7 +1933,7 @@ async function invokeClaudeCodeSDK(prompt) {
         const anthropic = new Anthropic.default({ apiKey: ANTHROPIC_API_KEY });
 
         const message = await anthropic.messages.create({
-            model: "claude-sonnet-4-20250514",
+            model: resolvedModel,
             max_tokens: 8192,
             messages: [{ role: "user", content: prompt }]
         });
@@ -2000,7 +2061,8 @@ IMPORTANT: Your final output MUST contain the JSON block above so results can be
     const result = await invokeClaudeCode(prompt, WORK_DIR, {
         issue_number: issue_number,
         repo_name: safeRepo,
-        endpoint: '/github-issue'
+        endpoint: '/github-issue',
+        model: issueData.model || null
     });
 
     // Parse JSON summary from Claude's output
@@ -2669,7 +2731,8 @@ Cite specific data from the Datadog context above. Do NOT fabricate evidence.`;
             const result = await invokeClaudeCode(prompt, WORK_DIR, {
                 monitor_id: monitorId,
                 monitor_name: monitorName,
-                endpoint: '/analyze'
+                endpoint: '/analyze',
+                model: fullPayload.model || null
             });
 
             // Store this RCA in vector DB with full payload for future reference
@@ -2954,7 +3017,8 @@ Ground your analysis in the live Datadog data provided. Quote specific log entri
             const result = await invokeClaudeCode(prompt, WORK_DIR, {
                 monitor_id: monitorId,
                 monitor_name: monitorName,
-                endpoint: '/watchdog'
+                endpoint: '/watchdog',
+                model: fullPayload.model || null
             });
 
             // Store in vector DB
