@@ -33,17 +33,17 @@
 ## `> cat /etc/rayne.conf` 📋
 
 ```bash
-╭──────────────────────────────────────────────────────────────────────────────╮
-│                                                                              │
-│   DESCRIPTION="Datadog API Gateway with AI-Powered Root Cause Analysis"     │
-│   VERSION="2.0"                                                              │
-│   LICENSE="MIT"                                                              │
-│                                                                              │
-│   # Wraps Datadog API for downtimes, events, hosts, webhooks, and RUM       │
-│   # Automatic RCA via Claude when alerts fire                               │
-│   # Vector DB storage for learning from past incidents                      │
-│                                                                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────╮
+│                                                                         │
+│  DESCRIPTION="Datadog API Gateway with AI-Powered Root Cause Analysis"  │
+│  VERSION="2.0"                                                          │
+│  LICENSE="MIT"                                                          │
+│                                                                         │
+│  # Wraps Datadog API for downtimes, events, hosts, webhooks, and RUM    │
+│  # Automatic RCA via Claude when alerts fire                            │
+│  # Vector DB storage for learning from past incidents                   │
+│                                                                         │
+╰─────────────────────────────────────────────────────────────────────────╯
 ```
 
 ---
