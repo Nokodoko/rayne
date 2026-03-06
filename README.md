@@ -33,17 +33,17 @@
 ## `> cat /etc/rayne.conf` 📋
 
 ```bash
-╭─────────────────────────────────────────────────────────────────────────╮
-│                                                                         │
-│  DESCRIPTION="Datadog API Gateway with AI-Powered Root Cause Analysis"  │
-│  VERSION="2.0"                                                          │
-│  LICENSE="MIT"                                                          │
-│                                                                         │
-│  # Wraps Datadog API for downtimes, events, hosts, webhooks, and RUM    │
-│  # Automatic RCA via Claude when alerts fire                            │
-│  # Vector DB storage for learning from past incidents                   │
-│                                                                         │
-╰─────────────────────────────────────────────────────────────────────────╯
++-------------------------------------------------------------------------+
+|                                                                         |
+|  DESCRIPTION="Datadog API Gateway with AI-Powered Root Cause Analysis"  |
+|  VERSION="2.0"                                                          |
+|  LICENSE="MIT"                                                          |
+|                                                                         |
+|  # Wraps Datadog API for downtimes, events, hosts, webhooks, and RUM    |
+|  # Automatic RCA via Claude when alerts fire                            |
+|  # Vector DB storage for learning from past incidents                   |
+|                                                                         |
++-------------------------------------------------------------------------+
 ```
 
 ---
@@ -76,37 +76,37 @@
 <div align="center">
 
 ```
-                         ╔═══════════════════════════════════════╗
-                         ║         R A Y N E   S Y S T E M       ║
-                         ╚═══════════════════════════════════════╝
+                        +---------------------------------------+
+                        |          R A Y N E   S Y S T E M      |
+                        +---------------------------------------+
 
-                                ┌─────────────────┐
-                                │     DATADOG     │
-                                │     WEBHOOKS    │
-                                └────────┬────────┘
-                                         │
-                                         ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│                               RAYNE POD                                    │
-│                                                                            │
-│   ┌────────────────────────┐         ┌────────────────────────┐           │
-│   │    RAYNE GO API        │         │  CLAUDE AGENT SIDECAR  │           │
-│   │      Port 8080         │  <───>  │      Port 9000         │           │
-│   │                        │  HTTP   │                        │           │
-│   │  - Webhooks            │         │  - Claude Code         │           │
-│   │  - Accounts            │         │  - dd_lib Python       │           │
-│   │  - RUM Tracking        │         │  - Assets/Templates    │           │
-│   │  - Events/Hosts        │         │                        │           │
-│   │  - Downtimes           │         │                        │           │
-│   └────────────────────────┘         └────────────────────────┘           │
-│                                                                            │
-└────────────────────────────────────────────────────────────────────────────┘
-         │              │                      │               │
-         ▼              ▼                      ▼               ▼
-  ┌────────────┐ ┌────────────┐        ┌────────────┐  ┌────────────┐
-  │  Postgres  │ │  Datadog   │        │   Qdrant   │  │   Ollama   │
-  │   :5432    │ │    APIs    │        │  Vectors   │  │ Embeddings │
-  └────────────┘ └────────────┘        └────────────┘  └────────────┘
+                                 +-----------------+
+                                 |     DATADOG     |
+                                 |     WEBHOOKS    |
+                                 +--------+--------+
+                                          |
+                                          v
++------------------------------------------------------------------------+
+|                              RAYNE POD                                 |
+|                                                                        |
+|   +------------------------+         +------------------------+        |
+|   |    RAYNE GO API        |         |  CLAUDE AGENT SIDECAR  |        |
+|   |      Port 8080         | <---->  |      Port 9000         |        |
+|   |                        |  HTTP   |                        |        |
+|   |  - Webhooks            |         |  - Claude Code         |        |
+|   |  - Accounts            |         |  - dd_lib Python       |        |
+|   |  - RUM Tracking        |         |  - Assets/Templates    |        |
+|   |  - Events/Hosts        |         |                        |        |
+|   |  - Downtimes           |         |                        |        |
+|   +------------------------+         +------------------------+        |
+|                                                                        |
++------------------------------------------------------------------------+
+         |              |                      |               |
+         v              v                      v               v
+  +------------+ +------------+        +------------+  +------------+
+  |  Postgres  | |  Datadog   |        |   Qdrant   |  |   Ollama   |
+  |   :5432    | |    APIs    |        |  Vectors   |  | Embeddings |
+  +------------+ +------------+        +------------+  +------------+
      Storage       External              RCA Store       Local LLM
 ```
 
@@ -239,24 +239,24 @@ curl -X POST $(minikube service rayne-service --url)/v1/webhooks/receive \
 <div align="center">
 
 ```
-               ╔═════════════════════════════════════════════════╗
-               ║        ROOT CAUSE ANALYSIS FLOW                 ║
-               ╚═════════════════════════════════════════════════╝
+                    +-------------------------------------+
+                    |      ROOT CAUSE ANALYSIS FLOW       |
+                    +-------------------------------------+
 
-  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
-  │ WEBHOOK  │───>│  STORE   │───>│ PREFETCH │───>│ ANALYZE  │───>│ NOTEBOOK │
-  │ RECEIVE  │    │ POSTGRES │    │ DD DATA  │    │  CLAUDE  │    │  CREATE  │
-  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
-       │                               │               │               │
-       │                               ▼               ▼               ▼
-       │                         ┌──────────┐   ┌──────────┐   ┌──────────┐
-       │                         │   LOGS   │   │ SIMILAR  │   │ HYPERLINK│
-       │                         │  EVENTS  │   │   RCAs   │   │   ALL    │
-       │                         │  HOSTS   │   │ (Qdrant) │   │ RESOURCES│
-       │                         └──────────┘   └──────────┘   └──────────┘
-       │
-       └──────────────────────────────────────────────────────────────────────>
-                           Alert/Warn triggers full pipeline
++----------+    +----------+    +----------+    +----------+    +----------+
+| WEBHOOK  |--->|  STORE   |--->| PREFETCH |--->| ANALYZE  |--->| NOTEBOOK |
+| RECEIVE  |    | POSTGRES |    | DD DATA  |    |  CLAUDE  |    |  CREATE  |
++----------+    +----------+    +----------+    +----------+    +----------+
+     |                               |               |               |
+     |                               v               v               v
+     |                         +----------+    +----------+    +----------+
+     |                         |   LOGS   |    |  SIMILAR |    | HYPERLINK|
+     |                         |  EVENTS  |    |   RCAs   |    |   ALL    |
+     |                         |   HOSTS  |    | (Qdrant) |    | RESOURCES|
+     |                         +----------+    +----------+    +----------+
+     |
+     +----------------------------------------------------------------------->
+                          Alert/Warn triggers full pipeline
 ```
 
 </div>
@@ -315,20 +315,20 @@ curl -X POST $(minikube service rayne-service --url)/v1/webhooks/receive \
 <div align="center">
 
 ```
-                  ╔═════════════════════════════════════════╗
-                  ║        RUM INTEGRATION FLOW             ║
-                  ╚═════════════════════════════════════════╝
+                    +-----------------------------------------+
+                    |          RUM INTEGRATION FLOW           |
+                    +-----------------------------------------+
 
      BROWSER                      RAYNE (8080)                DATADOG
-        │                              │                          │
-        │  1. Load DD_RUM SDK          │                          │
-        │  2. POST /v1/rum/init ------→│                          │
-        │  ←--- visitor_uuid, session  │                          │
-        │  3. DD_RUM.setUser({id})     │                          │
-        │  4. RUM events --------------┼-------------------------→│
-        │     (@usr.id = our uuid)     │                          │
-        │  5. POST /v1/rum/track -----→│                          │
-        │                              │  PostgreSQL              │
+        |                              |                          |
+        |  1. Load DD_RUM SDK          |                          |
+        |  2. POST /v1/rum/init ------>|                          |
+        |  <---- visitor_uuid, session |                          |
+        |  3. DD_RUM.setUser({id})     |                          |
+        |  4. RUM events --------------+------------------------->|
+        |     (@usr.id = our uuid)     |                          |
+        |  5. POST /v1/rum/track ----->|                          |
+        |                              |  PostgreSQL              |
 ```
 
 </div>
