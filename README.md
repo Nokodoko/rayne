@@ -9,7 +9,7 @@
 
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0D1117,50:FF6B35,100:00D4FF&height=200&section=header&text=rayne&fontSize=80&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=AI-Powered%20Observability%20Gateway&descAlignY=55&descSize=20" width="100%"/>
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0D1117,50:FF6B35,100:00D4FF&height=200&section=header&text=rayne&fontSize=80&fontColor=ffffff&animation=fadeIn&fontAlignY=28&desc=AI-Powered%20Observability%20Gateway&descAlignY=58&descSize=18" width="100%"/>
 
 <p>
   <img src="https://img.shields.io/badge/Go-1.22+-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go"/>
