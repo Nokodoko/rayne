@@ -1,0 +1,46 @@
+datadogRum.init({
+  enableExperimentalFeatures: ["feature_flags", "true"],
+  applicationId: "6d730a61-be91-4cec-80fb-80848bb29d14",
+  clientToken: "pub902cdeb5b6dd38e7179c22ec46cf6112",
+  site: "datadoghq.com",
+  service: "rayne",
+  env: "staging",
+  sessionSampleRate: 100,
+  sessionReplaySampleRate: 20,
+  trackUserInteractions: true,
+  trackResources: true,
+  trackLongTasks: true,
+  defaultPrivacyLevel: "mask-user-input",
+  allowedTracingOrigins: [],
+  sampleRate: 100,
+  trackInteractions: true,
+  trackPageActivities: true,
+  trackFrustrations: true,
+  trackPagePerformance: true,
+  trackLayoutShifts: true,
+  trackFirstContentfulPaint: true,
+  trackLargestContentfulPaint: true,
+  trackCumulativeLayoutShift: true,
+  trackTotalBlockingTime: true,
+  trackFirstInputDelay: true,
+  trackNavigationTiming: true,
+  trackResourceTiming: true,
+  trackLongtaskTiming: true,
+  trackPaintTiming: true,
+  trackCustomTimings: true,
+  forwardConsoleLogs: ["info", "error", "warn", "debug"],
+  useAlternateIntakeDomains: true,
+  intakeApiVersion: 2,
+  useCrossSiteSessionCookie: true,
+  useSecureSessionCookie: true,
+  enableGetRumData: true,
+  // proxyHost: "proxy.example.com",
+  beforeSend: (event) => { },
+  //actionNameAttribute: 'data-dd-action-name',
+});
+// npm install @datadog/browser-rum --save
+
+
+// TO SEE ACTUAL COLLECTION OF RUM EVENTS:
+// https://raw.githubusercontent.com/DataDog/browser-sdk/main/packages/rum-core/src/domain/view/viewCollection.ts )
+// https://raw.githubusercontent.com/DataDog/browser-sdk/main/packages/rum-core/src/rumEvent.types.ts

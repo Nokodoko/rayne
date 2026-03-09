@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chris Montgomery — Systems Hacker &amp; Agentic AI Builder</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    /* ═══════════════════════════════════════════════════════════════
+       n0ko Resume — Cyberpunk Terminal Aesthetic
+       Tokens mirror ~/Portfolio/rayne/frontend/static/css/style.css
+       ═══════════════════════════════════════════════════════════════ */
+
+    :root {
+      /* Background Scale */
+      --bg-void:        #050810;
+      --bg-primary:     #0A0E17;
+      --bg-secondary:   #0F1420;
+      --bg-tertiary:    #151B2B;
+      --bg-surface:     #1A2332;
+
+      /* Cyan Accent */
+      --cyan-400:       #00D4FF;
+      --cyan-500:       #00B8DB;
+      --cyan-600:       #0097B2;
+      --cyan-glow:      rgba(0, 212, 255, 0.25);
+      --cyan-glow-strong: rgba(0, 212, 255, 0.45);
+
+      /* Red / Green Signal */
+      --red-500:        #CC2936;
+      --green-500:      #00FF9F;
+      --green-glow:     rgba(0, 255, 159, 0.20);
+
+      /* Text Scale */
+      --text-primary:   #E8ECF1;
+      --text-secondary: #8B95A8;
+      --text-muted:     #4E5972;
+      --text-on-cyan:   #050810;
+
+      /* Borders */
+      --border-subtle:  #1C2436;
+      --border-focus:   #00D4FF;
+
+      /* Shadows */
+      --shadow-card:    0 4px 24px rgba(0, 0, 0, 0.5);
+      --shadow-elevated: 0 8px 40px rgba(0, 0, 0, 0.6);
+      --shadow-cyan:    0 0 20px rgba(0, 212, 255, 0.25), 0 0 60px rgba(0, 212, 255, 0.10);
+
+      /* Typography */
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    /* ── Print Overrides ── */
+    @media print {
+      :root {
+        --bg-void:        #ffffff;
+        --bg-primary:     #ffffff;
+        --bg-secondary:   #f7f7f7;
+        --bg-tertiary:    #efefef;
+        --bg-surface:     #f0f0f0;
+        --cyan-400:       #0077aa;
+        --cyan-500:       #006699;
+        --green-500:      #007744;
+        --red-500:        #cc2222;
+        --text-primary:   #111111;
+        --text-secondary: #444444;
+        --text-muted:     #777777;
+        --border-subtle:  #dddddd;
+        --cyan-glow:      transparent;
+        --cyan-glow-strong: transparent;
+        --shadow-cyan:    none;
+        --shadow-card:    none;
+        --shadow-elevated: none;
+      }
+      * {
+        box-shadow: none !important;
+        text-shadow: none !important;
+      }
+      body {
+        padding: 0;
+        font-size: 10.5pt;
+        max-width: 100%;
+        color: #111;
+        background: #fff;
+      }
+      .no-print { display: none !important; }
+      a { color: var(--cyan-400); text-decoration: none; }
+      .resume-header { border-bottom: 2px solid var(--cyan-400); }
+      .resume-header h1 { color: #003366 !important; }
+      .resume-section h2 .prompt { color: var(--cyan-400); }
+      .job { page-break-inside: avoid; }
+      .project { page-break-inside: avoid; }
+      .case-study-box { border-left: 3px solid var(--cyan-400); }
+      .resume-section:nth-of-type(even) { background: #fafafa; }
+      .resume-section h2::after { opacity: 0.4; background: var(--cyan-400); }
+    }
+
+    /* ── Reset ── */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--bg-void);
+      color: var(--text-primary);
+      line-height: 1.6;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2rem 2.5rem;
+    }
+
+    a { color: var(--cyan-400); text-decoration: none; }
+    a:hover { text-decoration: underline; color: var(--cyan-500); }
+
+    /* ── Header ── */
+    .resume-header {
+      border-bottom: 2px solid var(--cyan-400);
+      box-shadow: 0 1px 0 0 var(--cyan-glow);
+      padding-bottom: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .resume-header h1 {
+      font-family: var(--font-mono);
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--cyan-400);
+      text-shadow: var(--shadow-cyan);
+      margin-bottom: 0.15rem;
+      letter-spacing: -0.02em;
+    }
+
+    .resume-header .subtitle {
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.02em;
+      margin-bottom: 0.75rem;
+    }
+
+    .resume-header .contact-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.25rem;
+      font-size: 0.82rem;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+    }
+
+    .resume-header .contact-row a {
+      color: var(--text-secondary);
+      transition: color 0.2s ease;
+    }
+
+    .resume-header .contact-row a:hover {
+      color: var(--cyan-400);
+      text-decoration: none;
+    }
+
+    /* ── Sections ── */
+    .resume-section {
+      margin-bottom: 1.6rem;
+      padding: 0.1rem 0;
+    }
+
+    /* Alternating subtle radial glow on even sections */
+    .resume-section:nth-of-type(even) {
+      background:
+        radial-gradient(ellipse at 10% 50%, rgba(0, 212, 255, 0.03) 0%, transparent 70%),
+        var(--bg-void);
+      padding: 0.6rem 0.75rem;
+      margin-left: -0.75rem;
+      margin-right: -0.75rem;
+      border-radius: 6px;
+    }
+
+    .resume-section h2 {
+      font-family: var(--font-mono);
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: 0.04em;
+      padding-bottom: 0.45rem;
+      margin-bottom: 0.85rem;
+      position: relative;
+    }
+
+    /* Cyan gradient divider line under section headers */
+    .resume-section h2::after {
+      content: '';
+      display: block;
+      height: 1px;
+      background: linear-gradient(
+        90deg,
+        var(--cyan-400) 0%,
+        var(--cyan-400) 55%,
+        transparent 100%
+      );
+      opacity: 0.20;
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+    }
+
+    .resume-section h2 .prompt {
+      color: var(--cyan-400);
+    }
+
+    /* ── Profile ── */
+    .profile p {
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 0.92rem;
+      line-height: 1.75;
+    }
+
+    /* ── Skills Grid ── */
+    .skills-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.45rem 2rem;
+    }
+
+    .skill-category {
+      display: flex;
+      gap: 0.4rem;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+
+    .skill-category .label {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--cyan-400);
+      white-space: nowrap;
+      text-shadow: 0 0 8px rgba(0, 212, 255, 0.30);
+    }
+
+    .skill-category .items {
+      font-family: var(--font-sans);
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+    }
+
+    /* ── Experience ── */
+    .job {
+      margin-bottom: 1.25rem;
+    }
+
+    .job-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      flex-wrap: wrap;
+      margin-bottom: 0.15rem;
+      gap: 0.5rem;
+    }
+
+    .job-title {
+      font-family: var(--font-sans);
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: var(--text-primary);
+    }
+
+    .job-date {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .job-company {
+      font-family: var(--font-sans);
+      font-size: 0.86rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.4rem;
+    }
+
+    .job ul {
+      padding-left: 1.2rem;
+      font-size: 0.84rem;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+    }
+
+    .job li {
+      margin-bottom: 0.22rem;
+      line-height: 1.55;
+    }
+
+    .job li strong {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    /* ── Case Study Highlight ── */
+    .case-study-box {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-subtle);
+      border-left: 3px solid var(--cyan-400);
+      padding: 0.75rem 1rem;
+      margin: 0.5rem 0 0.65rem;
+      border-radius: 4px;
+      box-shadow: 0 0 20px var(--cyan-glow);
+    }
+
+    .case-study-box .cs-title {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 0.84rem;
+      color: var(--cyan-400);
+      margin-bottom: 0.25rem;
+    }
+
+    .case-study-box p {
+      font-family: var(--font-sans);
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.2rem;
+      line-height: 1.55;
+    }
+
+    .metrics {
+      display: flex;
+      gap: 1.5rem;
+      margin-top: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .metric {
+      text-align: center;
+    }
+
+    .metric .val {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 1.15rem;
+      color: var(--green-500);
+      text-shadow: 0 0 10px var(--green-glow);
+      display: block;
+    }
+
+    .metric .lbl {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Projects Grid ── */
+    .projects-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.5rem;
+    }
+
+    .project {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-subtle);
+      padding: 0.55rem 0.8rem;
+      border-radius: 4px;
+      transition: border-color 0.25s ease, box-shadow 0.25s ease;
+    }
+
+    .project:hover {
+      border-color: var(--cyan-400);
+      box-shadow: var(--shadow-card), 0 0 20px var(--cyan-glow);
+    }
+
+    .project .pname {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 0.85rem;
+      color: var(--cyan-400);
+      margin-bottom: 0.2rem;
+    }
+
+    .project .pname a {
+      color: var(--cyan-400);
+    }
+
+    .project .pname a:hover {
+      text-decoration: none;
+      color: var(--cyan-500);
+    }
+
+    .project .pdesc {
+      font-family: var(--font-sans);
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      margin-bottom: 0.2rem;
+      line-height: 1.45;
+    }
+
+    .project .ptags {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    /* ── Education ── */
+    .edu-item {
+      margin-bottom: 0.4rem;
+    }
+
+    .edu-item .edu-title {
+      font-family: var(--font-sans);
+      font-weight: 600;
+      font-size: 0.88rem;
+      color: var(--text-primary);
+    }
+
+    .edu-item .edu-detail {
+      font-family: var(--font-sans);
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+    }
+
+    /* ── Back Link ── */
+    .back-link {
+      margin-top: 2rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border-subtle);
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+    }
+
+    .back-link a {
+      color: var(--text-muted);
+      transition: color 0.2s ease;
+    }
+
+    .back-link a:hover {
+      color: var(--cyan-400);
+      text-decoration: none;
+    }
+
+    /* ── Focus Ring ── */
+    *:focus-visible {
+      outline: 2px solid var(--cyan-400);
+      outline-offset: 2px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════ HEADER ═══════ -->
+  <header class="resume-header">
+    <h1>Chris Montgomery</h1>
+    <div class="subtitle">Systems Hacker &amp; Agentic AI Builder</div>
+    <div class="contact-row">
+      <span>Boston, MA</span>
+      <a href="https://n0kos.com">n0kos.com</a>
+      <a href="https://github.com/Nokodoko">github.com/Nokodoko</a>
+      <a href="https://linkedin.com/in/cmonty614">linkedin.com/in/cmonty614</a>
+      <a href="sms:+16178335891">Contact Me</a>
+    </div>
+  </header>
+
+  <!-- ═══════ PROFILE ═══════ -->
+  <section class="resume-section profile" id="profile">
+    <h2><span class="prompt">&gt; </span>cat /etc/identity</h2>
+    <p>
+      Systems-focused engineer who builds in the terminal. Deep expertise in DevOps, SRE, and
+      observability (Datadog), with production experience across Kubernetes, Terraform, and AWS
+      at enterprise scale. I write backend services and CLI tools in Go, build agentic AI systems
+      with multi-agent orchestration, and run everything on Linux with a suckless philosophy.
+      Currently building autonomous agent frameworks, LLM tooling, and observable infrastructure.
+    </p>
+  </section>
+
+  <!-- ═══════ CORE SKILLS ═══════ -->
+  <section class="resume-section" id="skills">
+    <h2><span class="prompt">&gt; </span>cat stack.yml</h2>
+    <div class="skills-grid">
+      <div class="skill-category">
+        <span class="label">Languages:</span>
+        <span class="items">Go, Python, Bash, C, Lua, Rust, TypeScript</span>
+      </div>
+      <div class="skill-category">
+        <span class="label">Observability:</span>
+        <span class="items">Datadog (APM, RUM, Synthetics, Logs), Prometheus, Grafana</span>
+      </div>
+      <div class="skill-category">
+        <span class="label">Infrastructure:</span>
+        <span class="items">Terraform, Ansible, Helm, CloudFormation</span>
+      </div>
+      <div class="skill-category">
+        <span class="label">Containers:</span>
+        <span class="items">Kubernetes (EKS), Docker, cgroups, KVM/QEMU</span>
+      </div>
+      <div class="skill-category">
+        <span class="label">Cloud:</span>
+        <span class="items">AWS (EC2, ECS, Fargate, RDS, Redshift, IAM, ALB/NLB)</span>
+      </div>
+      <div class="skill-category">
+        <span class="label">AI / Agents:</span>
+        <span class="items">Multi-agent orchestration, LLM tooling, Claude, Ollama, FastAPI</span>
+      </div>
+      <div class="skill-category">
+        <span class="label">CI/CD:</span>
+        <span class="items">GitLab CI, GitHub Actions, CircleCI, Docker builds</span>
+      </div>
+      <div class="skill-category">
+        <span class="label">Systems:</span>
+        <span class="items">Linux (Arch, Ubuntu, CentOS), Neovim, dwm, zsh, rsync, SSH</span>
+      </div>
+      <div class="skill-category">
+        <span class="label">Networking:</span>
+        <span class="items">TCP/IP, DNS, Service Mesh, OpenVPN, L4/L7 load balancing</span>
+      </div>
+      <div class="skill-category">
+        <span class="label">Data:</span>
+        <span class="items">PostgreSQL, MySQL (RDS), Redis, RabbitMQ, Redshift</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ EXPERIENCE ═══════ -->
+  <section class="resume-section" id="experience">
+    <h2><span class="prompt">&gt; </span>less experience.log</h2>
+
+    <!-- ECCO Select / USDA -->
+    <div class="job">
+      <div class="job-header">
+        <span class="job-title">Site Reliability Engineer &amp; Observability SME</span>
+        <span class="job-date">2023 &ndash; Present</span>
+      </div>
+      <div class="job-company">ECCO Select &mdash; embedded with USDA Forest Service (US Public Sector / FedRAMP)</div>
+      <div class="case-study-box">
+        <div class="cs-title">Published Case Study: 60% MTTR Reduction for USDA Forest Service</div>
+        <p>Led full-stack Datadog observability rollout across 1,000+ VMs and 150+ mission-critical applications on AWS.</p>
+        <div class="metrics">
+          <div class="metric"><span class="val">60%</span><span class="lbl">MTTR Reduction</span></div>
+          <div class="metric"><span class="val">85%</span><span class="lbl">MTTD Improvement</span></div>
+          <div class="metric"><span class="val">75%</span><span class="lbl">APM Deploy Time Drop</span></div>
+          <div class="metric"><span class="val">150+</span><span class="lbl">Apps Monitored</span></div>
+        </div>
+      </div>
+      <ul>
+        <li>Deployed Datadog across hybrid AWS environments (EC2, ECS, Fargate) with <strong>Terraform-managed agent rollouts</strong></li>
+        <li>Built custom dashboards, monitors, and SLOs; integrated Datadog with ITSM for automated incident ticketing</li>
+        <li>Implemented APM tracing, synthetic tests, and RUM across 150+ applications</li>
+        <li>Standardized monitoring-as-code workflows, reducing APM deployment time by 75%</li>
+        <li>Built <strong>dd_lib</strong>, a custom Python library for Datadog API automation — abstracting monitor, dashboard, and metric operations into reusable modules</li>
+        <li>Developed <strong>rayne</strong>, an agentic root-cause-analysis server that correlates Datadog alerts with infrastructure telemetry to accelerate incident triage</li>
+        <li>Engineered Python <strong>webhook pipelines</strong> (client and server) for Datadog event-driven automation — processing monitor alerts, triggering remediation workflows, and forwarding enriched payloads to downstream services</li>
+        <li>Served as observability SME across teams at varying stages of cloud adoption</li>
+      </ul>
+    </div>
+
+    <!-- DevOps Engineer II -->
+    <div class="job">
+      <div class="job-header">
+        <span class="job-title">DevOps Engineer II</span>
+        <span class="job-date">Dec 2021 &ndash; Aug 2023</span>
+      </div>
+      <div class="job-company">St. Louis, MO</div>
+      <ul>
+        <li>Administered <strong>Kubernetes (EKS)</strong> for 100+ services across production, staging, and services environments</li>
+        <li>Transitioned clusters from unmanaged to managed nodes; implemented Helm chart standardization across teams</li>
+        <li>Managed <strong>Datadog</strong> integration: dashboards, monitors, APM, tracing, and synthetic tests for full-stack observability</li>
+        <li>Provisioned and managed AWS infrastructure with <strong>Terraform</strong>: IAM, ACM, EC2, RDS, Redshift, ALB/NLB</li>
+        <li>Built event-driven and queue-based scaling strategies; developed custom Kubernetes operators</li>
+        <li>Completed Datadog migration from Grafana/Prometheus; removed Nginx sidecar for internal traffic</li>
+        <li>Revamped Docker base images from managed packages to compiled-from-source builds, reducing image size and CVEs</li>
+        <li>Standardized Helm charts from per-service manifests to a unified chart with exceptions</li>
+        <li>Managed GitLab CI runners, standardized CI files for consistent deployments across developer teams</li>
+        <li>Administered databases: AWS RDS (MySQL), PostgreSQL (vector DBs), Redshift (warehousing)</li>
+        <li>Implemented service mesh and L4/L7 load balancing with AWS NLB and ALB</li>
+      </ul>
+    </div>
+
+    <!-- CJT Enterprises -->
+    <div class="job">
+      <div class="job-header">
+        <span class="job-title">DevOps Engineer</span>
+        <span class="job-date">Feb 2018 &ndash; Dec 2021</span>
+      </div>
+      <div class="job-company">CJT Enterprises &mdash; Boston, MA</div>
+      <ul>
+        <li>Containerized 3-tier application on Kubernetes: Go frontend, Java REST API, PostgreSQL</li>
+        <li>Optimized container images with multi-stage builds and Ambassador pattern</li>
+        <li>Managed CI/CD tooling in Docker on Kubernetes clusters; streamlined Dockerfile creation</li>
+        <li>Automated server provisioning and configuration with <strong>Ansible</strong></li>
+        <li>Managed SSL certificates for Kubernetes-deployed applications</li>
+        <li>Administered Linux production environments (Ubuntu, CentOS, Arch)</li>
+      </ul>
+    </div>
+
+    <!-- USAF -->
+    <div class="job">
+      <div class="job-header">
+        <span class="job-title">Aerospace &amp; Propulsion Technician</span>
+        <span class="job-date">May 2009 &ndash; Aug 2012</span>
+      </div>
+      <div class="job-company">United States Air Force &mdash; East Granby, CT (TF34 &amp; F100 series)</div>
+    </div>
+
+    <!-- State Street -->
+    <div class="job">
+      <div class="job-header">
+        <span class="job-title">Application Manager &mdash; Assistant Vice President</span>
+        <span class="job-date">Feb 2015 &ndash; Nov 2018</span>
+      </div>
+      <div class="job-company">State Street Corporation &mdash; Boston, MA (Leadership Development Program)</div>
+      <ul>
+        <li>Transformed legacy corporate program into a centralized portal-based gateway</li>
+        <li>Aligned high-potential cohorts and business COEs through program rotation</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ═══════ PROJECTS ═══════ -->
+  <section class="resume-section" id="projects">
+    <h2><span class="prompt">&gt; </span>ls ~/projects/</h2>
+    <div class="projects-list">
+      <div class="project">
+        <div class="pname"><a href="https://github.com/Nokodoko/rayne">rayne</a></div>
+        <div class="pdesc">Go REST API wrapping Datadog. Webhook handler, monitoring demos, portfolio site.</div>
+        <div class="ptags">Go / Datadog / templ / HTMX / PostgreSQL</div>
+      </div>
+      <div class="project">
+        <div class="pname"><a href="https://github.com/Nokodoko/filePick">filePick</a></div>
+        <div class="pdesc">TUI file picker with fuzzy search, preview pane, vim keybindings.</div>
+        <div class="ptags">Go / Bubble Tea / TUI</div>
+      </div>
+      <div class="project">
+        <div class="pname"><a href="https://github.com/Nokodoko/computeCommander">computeCommander</a></div>
+        <div class="pdesc">CLI compute orchestration for cloud instances and local VMs.</div>
+        <div class="ptags">Go / CLI / Cloud</div>
+      </div>
+      <div class="project">
+        <div class="pname">Monty</div>
+        <div class="pdesc">Local AI agent: Ollama, persistent memory, tool-calling, multi-model.</div>
+        <div class="ptags">Python / Ollama / FastAPI</div>
+      </div>
+      <div class="project">
+        <div class="pname"><a href="https://github.com/Nokodoko/messages_tui">messages_tui</a></div>
+        <div class="pdesc">Terminal UI for Google Messages with vim navigation and QR pairing.</div>
+        <div class="ptags">Go / Bubble Tea / TUI</div>
+      </div>
+      <div class="project">
+        <div class="pname"><a href="https://github.com/Nokodoko/k8s_the_hard_way">k8s_the_hard_way</a></div>
+        <div class="pdesc">Kubernetes from scratch on AWS via Terraform. Hightower's guide.</div>
+        <div class="ptags">Terraform / AWS / Kubernetes</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ EDUCATION ═══════ -->
+  <section class="resume-section" id="education">
+    <h2><span class="prompt">&gt; </span>cat education.md</h2>
+    <div class="edu-item">
+      <div class="edu-title">MIT Professional Education</div>
+      <div class="edu-detail">Cloud &amp; DevOps: Continuous Transformation</div>
+    </div>
+    <div class="edu-item">
+      <div class="edu-title">Ardan Labs</div>
+      <div class="edu-detail">Ultimate Go &bull; Intensive Docker &bull; Intensive Kubernetes</div>
+    </div>
+    <div class="edu-item">
+      <div class="edu-title">United States Air Force</div>
+      <div class="edu-detail">Aerospace &amp; Propulsion Technician (Level 3) &mdash; May 2009 &ndash; Aug 2012</div>
+    </div>
+    <div class="edu-item">
+      <div class="edu-title">Nichols College</div>
+      <div class="edu-detail">Bachelor of Arts &mdash; Dudley, MA (2007)</div>
+    </div>
+  </section>
+
+  <!-- ═══════ Back Link ═══════ -->
+  <div class="back-link no-print">
+    <a href="/">&larr; back to n0kos.com</a>
+  </div>
+
+</body>
+</html>

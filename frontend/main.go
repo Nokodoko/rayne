@@ -55,10 +55,16 @@ func cacheControlHandler(next http.Handler) http.Handler {
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+		handleNotFound(w, r)
 		return
 	}
 
 	component := templates.Index()
+	component.Render(r.Context(), w)
+}
+
+func handleNotFound(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotFound)
+	component := templates.NotFound()
 	component.Render(r.Context(), w)
 }
