@@ -498,13 +498,18 @@ pre code {
   letter-spacing: 0.02em;
 }
 
-/* ── Highlight Section (openbrain) ── */
+/* ── Highlight Section ── */
 .highlight-section {
   background: linear-gradient(180deg, rgba(0, 212, 255, 0.03) 0%, transparent 100%);
   border-top: 1px solid rgba(0, 212, 255, 0.15);
   border-bottom: 1px solid rgba(0, 212, 255, 0.15);
   padding: var(--space-12) 0;
   margin-bottom: var(--space-8);
+}
+
+.highlight-section .section-title,
+#case-study .section-title {
+  margin-bottom: var(--space-3);
 }
 
 /* ── Case Study ── */
